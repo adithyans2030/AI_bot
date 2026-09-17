@@ -1,0 +1,15 @@
+Binary Search Trees
+
+A binary search tree (BST) is a binary tree data structure where each node has at most two children, referred to as the left child and the right child. For every node in the tree, all keys in its left subtree are smaller than the node's own key, and all keys in its right subtree are larger. This ordering property is what makes searching efficient: at each node, you can decide which subtree to descend into without examining the other one.
+
+Because of this ordering, an in-order traversal of a BST (visit left subtree, then the node, then right subtree) always produces the keys in sorted order. This is a useful way to verify that a tree satisfies the BST property, and it is also how you would print a BST's contents sorted without a separate sorting step.
+
+Searching for a key in a BST starts at the root and compares the target key to the current node's key. If they are equal, the search is done. If the target is smaller, the search continues into the left subtree; if larger, into the right subtree. If a null pointer is reached before finding the key, the key is not present. In a balanced tree, this takes O(log n) time, because each comparison eliminates roughly half of the remaining nodes, just like binary search on a sorted array.
+
+Insertion follows the same downward path used by search. You walk from the root, going left or right based on comparisons, until you reach a null pointer, and then you attach the new node there as a leaf. Insertion never needs to rearrange existing nodes in a plain BST, it only adds a new leaf.
+
+Deletion is the trickiest of the three basic operations because it has three cases. If the node to delete is a leaf, you simply remove it. If it has one child, you splice that child up to take the deleted node's place. If it has two children, the usual approach is to find the node's in-order successor (the smallest key in its right subtree, found by going right once and then left as far as possible), copy that successor's key into the node being deleted, and then delete the successor node instead, which is guaranteed to have at most one child.
+
+The O(log n) performance of these operations depends entirely on the tree staying roughly balanced. If keys are inserted in sorted order into a plain BST, the tree degenerates into a linked list, and every operation becomes O(n) in the worst case. This is exactly the motivation for self-balancing variants such as AVL trees and red-black trees, which add extra bookkeeping (heights or colors) to rebalance the tree automatically after insertions and deletions, guaranteeing O(log n) height no matter the insertion order.
+
+A common past-exam question type asks students to trace through a sequence of insertions and draw the resulting BST, or to trace a deletion with two children and identify the correct in-order successor. Another common question type asks for the worst-case and average-case time complexity of search, insert, and delete, and to explain why a skewed tree behaves like a linked list.

@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Env / secrets
+.env
+backend/.env
+
+# Local data (generated at runtime, not source)
+backend/data/units/*.json
+backend/data/sessions/*.json
+!backend/data/units/.gitkeep
+!backend/data/sessions/.gitkeep
+
+# Sentence-transformers model cache if ever downloaded locally
+backend/.model_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Frontend (Vite + React)
+frontend/node_modules/
+frontend/dist/
