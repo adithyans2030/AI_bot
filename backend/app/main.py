@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -184,6 +184,21 @@ def get_report_markdown(session_id: str):
 
 
 # --- Static frontend (served from the same origin to avoid CORS entirely) ---
+#
+# The React app is a client-side-routed SPA (react-router-dom: "/" is the
+# landing page, "/app" is the tool). A plain StaticFiles mount at "/" only
+# serves index.html for the exact root path, not for "/app" — that would
+# 404 on a hard refresh or a direct/bookmarked visit, since there's no
+# literal "app" file on disk for it to find. So instead: hashed JS/CSS
+# assets are served directly from /assets, and everything else falls
+# through to this catch-all, which always serves index.html and lets
+# react-router-dom take over client-side routing in the browser. All the
+# API routes above are matched first (FastAPI checks routes in registration
+# order), so this never shadows them.
 
 if FRONTEND_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIR / "assets")), name="frontend-assets")
+
+    @app.get("/{full_path:path}")
+    def spa_fallback(full_path: str):
+        return FileResponse(FRONTEND_DIR / "index.html")

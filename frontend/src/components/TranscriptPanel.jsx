@@ -108,7 +108,7 @@ export default function TranscriptPanel({ session, entries, onSendChunk }) {
 
   return (
     <section className="panel" id="transcript-panel">
-      <h2>3. Live transcript</h2>
+      <h2>Live transcript</h2>
       <div className="row">
         <button onClick={toggleMic} disabled={!session}>
           {listening ? "⏹ Stop listening" : "🎤 Start listening"}
@@ -116,7 +116,7 @@ export default function TranscriptPanel({ session, entries, onSendChunk }) {
         <span className="status-line">{micStatus}</span>
       </div>
 
-      <label>Paste-in mode (for testing without a live mic)</label>
+      <span className="eyebrow">Paste-in mode (for testing without a live mic)</span>
       <div className="row">
         <textarea
           rows={2}
@@ -129,8 +129,9 @@ export default function TranscriptPanel({ session, entries, onSendChunk }) {
         </button>
       </div>
 
-      <label>Transcript</label>
-      <div className="scroll-box" ref={scrollRef}>
+      <span className="eyebrow">Transcript</span>
+      <div className="scroll-box transcript-log" ref={scrollRef}>
+        {entries.length === 0 && <div className="empty-hint">Nothing said yet.</div>}
         {entries.map((e, i) => (
           <div className="log-entry" key={i}>
             <span className="ts">{fmtTime(e.timestamp)}</span>

@@ -1,173 +1,450 @@
-:root {
-  --bg: #0f172a;
-  --panel-bg: #1e293b;
-  --border: #334155;
-  --text: #e2e8f0;
-  --muted: #94a3b8;
-  --accent: #38bdf8;
-  --accent-strong: #0ea5e9;
-  --warn-bg: #422006;
-  --warn-text: #fbbf24;
+/* Fonts (Fraunces + Source Sans 3) are loaded once via <link> tags in
+   index.html, shared with the landing page — not re-imported here. */
+
+/* Everything in this file is scoped under .app-shell (the product tool's
+   root element) so it can never leak onto / collide with the landing page,
+   which shares this same bundle and defines its own tokens/resets under
+   its own .landing-page root. */
+
+.app-shell {
+  /* Same sunset-orange-and-black theme as the landing page (.landing-page
+     in pages/LandingPage.css) — kept as a separate token block, scoped
+     here, rather than sharing one globally, so each page still works if
+     the other's tokens ever diverge again later. */
+  --bg: #121110;
+  --bg-deep: #000000;
+  --surface: #1a1815;
+  --surface-muted: var(--bg);
+  --border: #2e2b26;
+  --border-strong: #3a3733;
+  --text: #f5f1ea;
+  --text-secondary: #b5afa3;
+  --text-muted: #8c877d;
+  --accent: #e4572e;
+  --accent-hover: #ff7a4d;
+  --warn-bg: var(--bg-deep);
+  --warn-border: var(--accent);
+  --warn-text: var(--accent-hover);
+  --radius: 12px;
+  --radius-sm: 8px;
+
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 24px 48px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Source Sans 3", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  min-height: 100vh;
 }
 
-* { box-sizing: border-box; }
+.app-shell * { box-sizing: border-box; }
 
-body {
-  margin: 0;
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  background: var(--bg);
+.app-shell h1, .app-shell h2, .app-shell h3 {
+  font-family: "Fraunces", Georgia, serif;
+  font-weight: 600;
   color: var(--text);
 }
 
-.app-header {
-  padding: 1rem 1.5rem;
+.app-shell .app-header {
+  padding: 20px 24px;
+  margin: 0 -24px 8px;
   border-bottom: 1px solid var(--border);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.75rem;
+  gap: 12px;
   justify-content: space-between;
 }
 
-.app-header h1 {
-  font-size: 1.25rem;
+.app-shell .app-header h1 {
+  font-size: 24px;
   margin: 0;
 }
 
-.ai-badge {
+.app-shell .ai-badge {
   background: var(--warn-bg);
   color: var(--warn-text);
-  padding: 0.4rem 0.75rem;
-  border-radius: 6px;
-  font-size: 0.85rem;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
   font-weight: 600;
-  border: 1px solid #92400e;
+  border: 1px solid var(--warn-border);
 }
 
-.layout {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-  gap: 1rem;
-  padding: 1rem;
+/* --- Status row (pill) + compact session bar --- */
+
+.app-shell .status-row {
+  margin: 20px 0 0;
 }
 
-.panel {
-  background: var(--panel-bg);
+.app-shell .status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--surface-muted);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 1rem;
+  color: var(--text-secondary);
+}
+
+.app-shell .status-pill.listening { border-color: var(--accent); color: var(--accent-hover); }
+
+.app-shell .pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.app-shell .session-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  margin: 16px 0 24px;
+}
+
+.app-shell .session-status-bar__meta {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.app-shell .session-status-bar .unit-name {
+  font-family: "Fraunces", serif;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.app-shell .session-status-bar .timer {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.app-shell .session-status-bar__actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+/* --- Setup row (pre-session) + main grid --- */
+
+.app-shell .setup-row {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 24px;
+  margin: 16px 0 24px;
+  align-items: start;
+}
+
+.app-shell .session-grid {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+.app-shell .col-transcript { display: flex; }
+.app-shell .col-transcript .panel { flex: 1; min-height: 480px; }
+
+.app-shell .col-side {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 24px;
 }
 
-.panel h2 {
-  margin: 0 0 0.25rem 0;
-  font-size: 1rem;
+@media (max-width: 900px) {
+  .app-shell .setup-row { grid-template-columns: 1fr; }
+  .app-shell .session-grid { grid-template-columns: 1fr; }
+}
+
+/* --- Cards --- */
+
+.app-shell .panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.app-shell .panel h2 {
+  font-size: 19px;
+  margin: 0 0 4px 0;
+}
+
+.app-shell .panel p.muted {
+  font-size: 15px;
+  color: var(--text-secondary);
+  margin: 0 0 4px;
+}
+
+/* --- Typography helpers --- */
+
+.app-shell label {
+  display: block;
+  font-size: 15px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+.app-shell .eyebrow {
+  display: block;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--accent);
+  font-weight: 700;
+  margin-top: 10px;
 }
 
-label {
-  font-size: 0.8rem;
-  color: var(--muted);
-  margin-top: 0.25rem;
+.app-shell .status-line {
+  font-size: 13px;
+  color: var(--text-secondary);
 }
 
-input[type="text"], textarea, select {
-  background: #0b1220;
+/* --- Form controls --- */
+
+.app-shell input[type="text"], .app-shell textarea, .app-shell select {
+  min-height: 44px;
+  padding: 10px 12px;
+  background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text);
-  border-radius: 6px;
-  padding: 0.5rem;
+  border-radius: var(--radius-sm);
   font-family: inherit;
-  font-size: 0.9rem;
+  font-size: 15px;
   width: 100%;
   resize: vertical;
 }
 
-.row {
-  display: flex;
-  gap: 0.5rem;
-  align-items: center;
+.app-shell textarea { min-height: 60px; }
+
+.app-shell input:focus, .app-shell textarea:focus, .app-shell select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
 }
 
-.row textarea { flex: 1; }
+.app-shell .row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
 
-button {
-  background: var(--accent-strong);
-  color: #04121c;
+.app-shell .row textarea { flex: 1; }
+
+/* --- Buttons --- */
+
+.app-shell button {
+  min-height: 44px;
+  padding: 0 18px;
+  background: var(--accent);
+  color: var(--bg);
   border: none;
-  border-radius: 6px;
-  padding: 0.5rem 0.9rem;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
   font-weight: 600;
   cursor: pointer;
-  font-size: 0.85rem;
+  font-size: 15px;
   white-space: nowrap;
+  transition: background-color 150ms ease;
 }
 
-button:hover:not(:disabled) { background: var(--accent); }
+.app-shell button:hover:not(:disabled) { background: var(--accent-hover); }
 
-button:disabled {
-  background: #334155;
-  color: #64748b;
+.app-shell button:disabled {
+  background: var(--surface-muted);
+  color: var(--text-secondary);
   cursor: not-allowed;
 }
 
-button.secondary {
+.app-shell button.secondary {
   background: transparent;
   border: 1px solid var(--border);
   color: var(--text);
 }
 
-button.secondary:hover:not(:disabled) { border-color: var(--accent); }
+.app-shell button.secondary:hover:not(:disabled) { background: var(--surface-muted); }
 
-.status-line {
-  font-size: 0.8rem;
-  color: var(--muted);
-}
+/* --- Scrollable logs (transcript / questions / notes) --- */
 
-.scroll-box {
-  max-height: 220px;
+.app-shell .scroll-box {
+  max-height: 260px;
   overflow-y: auto;
-  background: #0b1220;
+  background: var(--surface-muted);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.5rem;
-  font-size: 0.85rem;
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: 8px;
 }
 
-.log-entry {
+.app-shell .transcript-log {
+  flex: 1;
+  max-height: none;
+  min-height: 320px;
+}
+
+.app-shell .empty-hint {
+  font-size: 14px;
+  color: var(--text-secondary);
+  padding: 4px 2px;
+}
+
+.app-shell .log-entry {
+  font-size: 15px;
+  color: var(--text);
+  padding-bottom: 8px;
   border-bottom: 1px dashed var(--border);
-  padding-bottom: 0.35rem;
+  animation: fadeIn 150ms ease-in;
 }
 
-.log-entry:last-child { border-bottom: none; }
+.app-shell .log-entry:last-child { border-bottom: none; padding-bottom: 0; }
 
-.log-entry .ts {
-  color: var(--muted);
-  font-size: 0.75rem;
-  margin-right: 0.4rem;
+.app-shell .log-entry .ts {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-right: 8px;
+  font-variant-numeric: tabular-nums;
 }
 
-.field {
+.app-shell .log-entry .tag {
+  margin-left: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* --- AI Co-host: topic badge, question, disclaimer --- */
+
+.app-shell .topic-badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  color: var(--accent-hover);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.app-shell .question-block {
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
+  gap: 6px;
+  margin-top: 6px;
 }
 
-.question-box {
-  background: #0b1220;
-  border: 1px solid var(--accent);
-  border-radius: 6px;
-  padding: 0.75rem;
-  font-size: 0.95rem;
-  min-height: 1.5rem;
+.app-shell .question-box {
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+  font-size: 16px;
+  min-height: 1.5em;
 }
 
-#report-panel { grid-column: 1 / -1; }
+.app-shell .ai-disclaimer {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
 
-#report-body h3 { color: var(--accent); margin-bottom: 0.25rem; }
-#report-body ul { margin: 0.25rem 0 0.75rem 1.25rem; }
+/* --- Collapsible section (notes) --- */
+
+.app-shell .collapsible-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0;
+  min-height: auto;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.app-shell .collapsible-header:hover { background: none; }
+
+.app-shell .collapsible-header h2 { margin: 0; }
+
+.app-shell .collapsible-header .chevron {
+  font-size: 18px;
+  color: var(--text-secondary);
+  font-family: "Fraunces", serif;
+}
+
+.app-shell .collapsible-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+/* --- Report --- */
+
+.app-shell .report-meta {
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.app-shell .report-body h3 {
+  font-size: 17px;
+  margin: 18px 0 6px;
+}
+
+.app-shell .report-body h3:first-of-type { margin-top: 4px; }
+
+.app-shell .report-body ul {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.app-shell .report-body li {
+  font-size: 15px;
+  color: var(--text);
+}
+
+.app-shell .report-body li em {
+  color: var(--text-secondary);
+  font-style: normal;
+  font-size: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell .pulse-dot, .app-shell .log-entry { animation: none; }
+}

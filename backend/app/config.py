@@ -13,10 +13,19 @@ from dotenv import load_dotenv
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BACKEND_DIR / ".env")
 
-# --- xAI (Grok) ---
-XAI_API_KEY = os.environ.get("XAI_API_KEY", "")
-XAI_BASE_URL = "https://api.x.ai/v1"
-XAI_MODEL = os.environ.get("XAI_MODEL", "grok-4-fast-non-reasoning")
+# --- Local LLM, via Ollama's OpenAI-compatible endpoint ---
+# Runs fully on this machine: no API key, no credits, no account, no rate
+# limits from a provider. Any other OpenAI-compatible local server (LM
+# Studio, etc.) works too — just change LLM_BASE_URL.
+# Ollama doesn't check the key at all; the OpenAI client just requires the
+# field to be a non-empty string.
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "ollama")
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:11434/v1")
+# Defaults to a small model on purpose: on a 4GB-VRAM GPU, a model that
+# doesn't fit in VRAM spills into CPU/GPU split inference and gets ~15x
+# slower (163s vs 11s, measured). Pick a bigger model here only if your
+# hardware can actually hold it in VRAM.
+LLM_MODEL = os.environ.get("LLM_MODEL", "gemma2:2b")
 
 # --- Embeddings ---
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")

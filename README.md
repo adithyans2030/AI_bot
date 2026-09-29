@@ -31,7 +31,7 @@ Paste-in textbox ───────────────┼──► POST 
         embed last ~90s of transcript → cosine similarity vs. stored
         unit chunks (local sentence-transformers + numpy, no paid API)
                                  │
-                    top-3 chunks → Grok (xAI) question generation
+                    top-3 chunks → local LLM question generation (Ollama)
                                  │
               logged to session log (JSON) → shown in UI, optional TTS
                                  │
@@ -45,7 +45,11 @@ Paste-in textbox ───────────────┼──► POST 
 - **Embeddings:** `sentence-transformers` (`all-MiniLM-L6-v2`), fully local
 - **Vector search:** in-memory numpy cosine similarity (no vector DB — the
   data volume per unit is a few thousand words, this is intentionally simple)
-- **LLM:** Grok via the OpenAI-compatible endpoint (`https://api.x.ai/v1`)
+- **LLM:** a local model via [Ollama](https://ollama.com)'s OpenAI-compatible
+  endpoint (`http://localhost:11434/v1`) — no API key, no credits, no
+  account, no external rate limits, using the `openai` Python package
+  rather than a provider-specific SDK. Model choice matters for latency:
+  pick one that actually fits your GPU's VRAM (see Setup below)
 - **Storage:** local JSON files under `backend/data/` — no database
 - **Frontend:** React + Vite (`frontend/`). Production build (`npm run
   build`) outputs to `frontend/dist/`, which FastAPI serves directly at `/`
@@ -62,18 +66,26 @@ python -m venv .venv
 # macOS/Linux:          source .venv/bin/activate
 
 pip install -r requirements-dev.txt   # includes pytest for the test suite
-cp .env.example .env                  # then edit .env and set XAI_API_KEY
+cp .env.example .env
 ```
 
-`XAI_MODEL`, all pacing thresholds, chunk sizes, and top-k are all in
-`backend/app/config.py` (sourced from `.env`) — nothing is hardcoded
-elsewhere. Verify the current model name and your account's free-credit
-balance/rate limits in the [xAI console](https://console.x.ai) — don't
-assume the placeholder in `.env.example` is still correct by the time you
-read this.
+Install [Ollama](https://ollama.com), then pull a model:
 
-**`.env` holds your real key and is git-ignored. `.env.example` must only
-ever contain placeholders — never paste a real key into it.**
+```bash
+ollama pull gemma2:2b   # or a bigger model, if your GPU's VRAM can hold it
+```
+
+Make sure Ollama is running (the desktop app does this automatically;
+otherwise `ollama serve`) before starting the backend. `LLM_MODEL`, all
+pacing thresholds, chunk sizes, and top-k are all in `backend/app/config.py`
+(sourced from `.env`) — nothing is hardcoded elsewhere.
+
+**Model choice directly affects latency, not just quality.** If a model's
+VRAM footprint exceeds your GPU's capacity, Ollama splits inference across
+CPU and GPU, which is drastically slower — measured ~15x (163s vs 11s per
+question) on a 4GB-VRAM GTX 1650 going from a 5.6GB-loaded model to a
+2GB-loaded one. Check `ollama ps` after a request to see whether your model
+landed on `100% GPU` or split — if it split, pick a smaller model.
 
 ## Running
 
@@ -89,7 +101,12 @@ uvicorn app.main:app --port 8000
 ```
 
 Then open `http://localhost:8000/` in Chrome (Web Speech API support is
-best there). The frontend and API share the same origin — no CORS.
+best there) — that's the marketing/landing page. The actual tool is at
+`http://localhost:8000/app`. Routing is client-side (`react-router-dom`);
+the backend has a catch-all route that serves `index.html` for any
+non-API, non-asset path, so `/app` also works on a direct hit, hard
+refresh, or bookmark, not just when navigated to from `/`. The frontend
+and API share the same origin — no CORS.
 
 **Dev mode (hot reload while editing the React app):**
 
@@ -117,17 +134,25 @@ before relying on the backend to serve the app directly at `:8000`.
 
 ## Testing
 
-Fast, offline unit tests (chunking, cosine similarity, pacing gate logic —
-no model download, no network):
-
 ```bash
 cd backend
 pytest
 ```
 
+Two kinds of coverage, in one run:
+- **Pure-logic unit tests** (chunking, cosine similarity, pacing gate) — no
+  model, no network, sub-second.
+- **API integration tests** (`tests/test_api.py`, via FastAPI's
+  `TestClient`) — real unit ingestion, real local embeddings, a full
+  session lifecycle, and a regression test for the SPA-fallback routing.
+  These never trigger question generation (no `force=True` tick on an idle
+  session), so they don't need Ollama running — but they do load the
+  embedding model for real, so the first run after a fresh interpreter is
+  slow (~90s, one-time cold start), not instant.
+
 ### Manual end-to-end dry run (per the build order)
 
-1. Start the server, open the app.
+1. Start the server, open `http://localhost:8000/app` (the tool, not the landing page).
 2. Paste `samples/sample_unit_notes.txt` into the unit-material box, name it
    "Binary Search Trees", save it.
 3. Start a session against that unit.
@@ -146,24 +171,30 @@ pytest
 ```
 backend/
   app/
-    config.py        # single source of truth: API key, model name, thresholds
+    config.py        # single source of truth: local-LLM URL/model, thresholds
     ingestion.py      # chunking (pure) + local embedding
     retrieval.py      # cosine similarity top-k search
-    question_gen.py   # Grok API call, grounded prompt
+    question_gen.py   # local LLM (Ollama) call, grounded prompt
     pacing.py         # silence/interval trigger gate (pure, testable)
     session_manager.py# in-memory runtime: transcript buffer + orchestration
     session_log.py     # event log + honest report generation
     storage.py         # local JSON persistence for units + sessions
-    main.py             # FastAPI routes + static frontend mount
+    main.py             # FastAPI routes + static frontend mount + SPA fallback
   data/                 # local JSON storage (git-ignored contents)
-  tests/                 # pytest unit tests for ingestion/retrieval/pacing
+  tests/                 # pytest: ingestion/retrieval/pacing (pure) +
+                          # test_api.py (FastAPI TestClient integration tests)
 frontend/
   src/
-    App.jsx              # top-level state + layout
-    api.js                # fetch wrapper for the backend
-    components/            # UnitPanel, SessionPanel, TranscriptPanel,
-                            # CohostPanel, NotesPanel, ReportPanel
-    styles.css
+    main.jsx              # react-router-dom entry: "/" -> LandingPage, "/app" -> App
+    App.jsx                # the tool: top-level state + layout
+    api.js                  # fetch wrapper for the backend
+    components/              # UnitPanel, SessionPanel, TranscriptPanel,
+                              # CohostPanel, NotesPanel, ReportPanel
+    styles.css                # tool theme, scoped under .app-shell
+    pages/
+      LandingPage.jsx          # marketing page (its own route, "/")
+      LandingPage.css           # scoped under .landing-page
+      ProductPreviewCard.jsx    # illustrative mock session card
   index.html / vite.config.js / package.json
   dist/                   # `npm run build` output — served by FastAPI (git-ignored)
 samples/

@@ -9,6 +9,13 @@ import ReportPanel from "./components/ReportPanel.jsx";
 
 const TICK_POLL_MS = 5000; // how often we ask the backend "is it time for a question?"
 
+function formatElapsed(totalSeconds) {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const mm = String(Math.floor(s / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
+
 export default function App() {
   const [units, setUnits] = useState([]);
   const [selectedUnitId, setSelectedUnitId] = useState("");
@@ -23,12 +30,20 @@ export default function App() {
   const [currentQuestion, setCurrentQuestion] = useState("");
   const [report, setReport] = useState(null);
 
+  // Purely a display clock for the compact session bar's elapsed-time badge —
+  // doesn't touch session/report state or the backend.
+  const [nowTick, setNowTick] = useState(() => Date.now() / 1000);
+
   async function reloadUnits() {
     setUnits(await api.listUnits());
   }
 
   useEffect(() => {
     reloadUnits();
+  }, []);
+
+  useEffect(() => {
+    document.title = "Doubt-Clearing AI Co-host";
   }, []);
 
   // Pacing-gate poll: only fires a question when the backend's pacing gate
@@ -38,6 +53,12 @@ export default function App() {
     const timer = setInterval(() => tick(false), TICK_POLL_MS);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
+
+  useEffect(() => {
+    if (!session) return undefined;
+    const timer = setInterval(() => setNowTick(Date.now() / 1000), 1000);
+    return () => clearInterval(timer);
   }, [session]);
 
   async function startSession() {
@@ -121,8 +142,10 @@ export default function App() {
     }
   }
 
+  const pillMode = session ? "listening" : report ? "ended" : null;
+
   return (
-    <>
+    <div className="app-shell">
       <header className="app-header">
         <h1>Doubt-Clearing AI Co-host</h1>
         <div
@@ -133,36 +156,66 @@ export default function App() {
         </div>
       </header>
 
-      <main className="layout">
-        <UnitPanel
-          units={units}
-          selectedUnitId={selectedUnitId}
-          setSelectedUnitId={setSelectedUnitId}
-          reloadUnits={reloadUnits}
-        />
+      {pillMode && (
+        <div className="status-row">
+          <span className={`status-pill ${pillMode === "listening" ? "listening" : ""}`}>
+            {pillMode === "listening" ? (
+              <>
+                <span className="pulse-dot" />
+                Listening…
+              </>
+            ) : (
+              "Session ended"
+            )}
+          </span>
+        </div>
+      )}
 
-        <SessionPanel
-          session={session}
-          statusText={sessionStatus}
-          onStart={startSession}
-          onEnd={endSession}
-          canStart={!!selectedUnitId}
-        />
+      {session ? (
+        <div className="session-status-bar">
+          <div className="session-status-bar__meta">
+            <span className="unit-name">{session.unitName}</span>
+            <span className="timer">{formatElapsed(nowTick - session.startedAt)}</span>
+          </div>
+          <div className="session-status-bar__actions">
+            <span className="status-line">{sessionStatus}</span>
+            <button className="secondary" onClick={endSession}>
+              End session
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="setup-row">
+          <UnitPanel
+            units={units}
+            selectedUnitId={selectedUnitId}
+            setSelectedUnitId={setSelectedUnitId}
+            reloadUnits={reloadUnits}
+          />
 
-        <TranscriptPanel session={session} entries={transcriptEntries} onSendChunk={sendTranscriptChunk} />
+          <SessionPanel statusText={sessionStatus} onStart={startSession} canStart={!!selectedUnitId} />
+        </div>
+      )}
 
-        <CohostPanel
-          session={session}
-          currentTopic={currentTopic}
-          currentQuestion={currentQuestion}
-          questionEntries={questionEntries}
-          onForceQuestion={() => tick(true)}
-        />
+      <main className="session-grid">
+        <div className="col-transcript">
+          <TranscriptPanel session={session} entries={transcriptEntries} onSendChunk={sendTranscriptChunk} />
+        </div>
 
-        <NotesPanel session={session} entries={notesEntries} onAddNote={addNote} />
+        <div className="col-side">
+          <CohostPanel
+            session={session}
+            currentTopic={currentTopic}
+            currentQuestion={currentQuestion}
+            questionEntries={questionEntries}
+            onForceQuestion={() => tick(true)}
+          />
 
-        <ReportPanel report={report} />
+          <NotesPanel session={session} entries={notesEntries} onAddNote={addNote} />
+
+          <ReportPanel report={report} />
+        </div>
       </main>
-    </>
+    </div>
   );
 }

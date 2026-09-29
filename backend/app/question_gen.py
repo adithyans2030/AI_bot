@@ -1,4 +1,10 @@
-"""Grok-backed question generation, grounded in retrieved unit chunks."""
+"""Local-LLM-backed question generation, grounded in retrieved unit chunks.
+
+Uses the `openai` package pointed at a local Ollama server's OpenAI-compatible
+endpoint, so no extra dependency is needed and no API key/credits/account is
+required. Swapping to a different OpenAI-compatible backend (cloud or local)
+is just a config change — see config.py.
+"""
 from __future__ import annotations
 
 from typing import List
@@ -14,7 +20,7 @@ _client = None
 def get_client() -> OpenAI:
     global _client
     if _client is None:
-        _client = OpenAI(api_key=config.XAI_API_KEY, base_url=config.XAI_BASE_URL)
+        _client = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
     return _client
 
 
@@ -46,7 +52,7 @@ def build_user_prompt(chunks: List[ScoredChunk], transcript_window: str) -> str:
 def generate_question(chunks: List[ScoredChunk], transcript_window: str) -> str:
     client = get_client()
     response = client.chat.completions.create(
-        model=config.XAI_MODEL,
+        model=config.LLM_MODEL,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": build_user_prompt(chunks, transcript_window)},

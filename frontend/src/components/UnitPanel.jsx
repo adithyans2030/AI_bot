@@ -30,7 +30,7 @@ export default function UnitPanel({ units, selectedUnitId, setSelectedUnitId, re
 
   return (
     <section className="panel" id="unit-panel">
-      <h2>1. Unit material</h2>
+      <h2>Unit material</h2>
       <label>Unit name</label>
       <input
         type="text"
@@ -50,7 +50,7 @@ export default function UnitPanel({ units, selectedUnitId, setSelectedUnitId, re
       </button>
       <div className="status-line">{status}</div>
 
-      <label>Existing units</label>
+      <span className="eyebrow">Existing units</span>
       <div className="row">
         <select value={selectedUnitId} onChange={(e) => setSelectedUnitId(e.target.value)}>
           {units.length === 0 && <option disabled>(no units saved yet)</option>}

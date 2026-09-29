@@ -3,13 +3,13 @@ export default function ReportPanel({ report }) {
 
   return (
     <section className="panel" id="report-panel">
-      <h2>6. Session report</h2>
-      <div id="report-body">
-        <p>
+      <h2>Session report</h2>
+      <div className="report-body">
+        <p className="ai-disclaimer">
           <strong>{report.ai_label}</strong> — one clearly-labeled AI assistant. No attendance
           figures are recorded or reported.
         </p>
-        <p>
+        <div className="report-meta">
           <strong>Unit:</strong> {report.unit_name}
           <br />
           <strong>Start:</strong> {report.started_at_iso}
@@ -17,7 +17,7 @@ export default function ReportPanel({ report }) {
           <strong>End:</strong> {report.ended_at_iso}
           <br />
           <strong>Duration:</strong> {report.duration_minutes} minutes
-        </p>
+        </div>
 
         <h3>Topics matched ({report.topic_match_count} events)</h3>
         <ul>
