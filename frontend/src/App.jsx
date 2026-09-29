@@ -1,13 +1,12 @@
 import { useEffect, useState } from "react";
 import { api } from "./api.js";
+import { TICK_POLL_MS } from "./config.js";
 import UnitPanel from "./components/UnitPanel.jsx";
 import SessionPanel from "./components/SessionPanel.jsx";
 import TranscriptPanel from "./components/TranscriptPanel.jsx";
 import CohostPanel from "./components/CohostPanel.jsx";
 import NotesPanel from "./components/NotesPanel.jsx";
 import ReportPanel from "./components/ReportPanel.jsx";
-
-const TICK_POLL_MS = 5000; // how often we ask the backend "is it time for a question?"
 
 function formatElapsed(totalSeconds) {
   const s = Math.max(0, Math.floor(totalSeconds));

@@ -77,6 +77,7 @@ def generate_report(session: Dict[str, Any]) -> Dict[str, Any]:
                 "question": q["question"],
                 "trigger_reason": q.get("trigger_reason"),
                 "shown": q.get("shown", True),
+                "slide_informed": q.get("slide_informed", False),
             }
             for q in questions
         ],
@@ -109,7 +110,8 @@ def render_report_markdown(report: Dict[str, Any]) -> str:
     if report["questions"]:
         for q in report["questions"]:
             reason = f" _(trigger: {q['trigger_reason']})_" if q.get("trigger_reason") else ""
-            lines.append(f"- [{q['timestamp_iso']}] {q['question']}{reason}")
+            slide_tag = " _(slide-informed)_" if q.get("slide_informed") else ""
+            lines.append(f"- [{q['timestamp_iso']}] {q['question']}{reason}{slide_tag}")
     else:
         lines.append("- (no questions were generated this session)")
     lines.append("")

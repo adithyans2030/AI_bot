@@ -7,7 +7,7 @@ is just a config change — see config.py.
 """
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 from openai import OpenAI
 
@@ -39,23 +39,31 @@ SYSTEM_PROMPT = (
 )
 
 
-def build_user_prompt(chunks: List[ScoredChunk], transcript_window: str) -> str:
+def build_user_prompt(
+    chunks: List[ScoredChunk], transcript_window: str, slide_text: Optional[str] = None
+) -> str:
     chunks_block = "\n\n".join(f"[Chunk {c.chunk_id}]\n{c.text}" for c in chunks) or "(none retrieved)"
     transcript_block = transcript_window.strip() or "(no recent transcript)"
+    slide_block = (
+        f"\n\nCurrently visible on the shared slide:\n{slide_text.strip()}" if slide_text and slide_text.strip() else ""
+    )
     return (
         f"Relevant unit material:\n{chunks_block}\n\n"
-        f"Recent transcript of what the teacher has been saying:\n{transcript_block}\n\n"
+        f"Recent transcript of what the teacher has been saying:\n{transcript_block}"
+        f"{slide_block}\n\n"
         "Generate one student question now."
     )
 
 
-def generate_question(chunks: List[ScoredChunk], transcript_window: str) -> str:
+def generate_question(
+    chunks: List[ScoredChunk], transcript_window: str, slide_text: Optional[str] = None
+) -> str:
     client = get_client()
     response = client.chat.completions.create(
         model=config.LLM_MODEL,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_user_prompt(chunks, transcript_window)},
+            {"role": "user", "content": build_user_prompt(chunks, transcript_window, slide_text)},
         ],
         temperature=0.8,
         max_tokens=120,

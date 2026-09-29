@@ -8,13 +8,27 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from . import config, ingestion, question_gen, retrieval, session_log, storage
+from . import config, ingestion, question_gen, retrieval, session_log, slide_vision, storage
 from .pacing import PacingGate
+
+
+@dataclass
+class SlideState:
+    """In-memory only — never persisted. Holds at most the single most
+    recent frame's thumbnail (for cheap perceptual diffing) and the single
+    most recent high-confidence slide read. No frame history, no image
+    storage beyond that one thumbnail."""
+
+    thumbnail: Optional[np.ndarray] = None
+    slide_title: Optional[str] = None
+    key_text: Optional[str] = None
+    confidence: str = "low"
+    last_frame_at: float = 0.0
 
 
 @dataclass
@@ -24,6 +38,7 @@ class SessionRuntime:
     chunk_ids: List[str]
     chunk_texts: List[str]
     embeddings: np.ndarray
+    slide: SlideState = field(default_factory=SlideState)
 
 
 ACTIVE_SESSIONS: Dict[str, SessionRuntime] = {}
@@ -104,24 +119,113 @@ def _chunk_preview(text: str, max_words: int = 12) -> str:
     return preview + ("..." if len(words) > max_words else "")
 
 
+# --- Slide capture (optional signal, alongside transcript matching) ---
+#
+# Perception only: process_frame() reads a frame and updates in-memory
+# state. It never touches the pacing gate and never calls question_gen
+# directly — a slide can never trigger a question by itself, only sharpen
+# the topic match the next time the existing pacing-gated tick() fires.
+
+
+def _slide_snapshot(runtime: SessionRuntime) -> Dict[str, Any]:
+    return {
+        "slide_title": runtime.slide.slide_title,
+        "key_text": runtime.slide.key_text,
+        "confidence": runtime.slide.confidence,
+    }
+
+
+def process_frame(session_id: str, frame: str, now: Optional[float] = None) -> Dict[str, Any]:
+    """Called when the frontend sends a captured slide frame."""
+    runtime = _get_runtime(session_id)
+    now = now if now is not None else time.time()
+
+    new_thumb = slide_vision.frame_thumbnail(frame)
+    previous_thumb = runtime.slide.thumbnail
+    diff = slide_vision.thumbnail_diff(new_thumb, previous_thumb)
+
+    # Every frame that arrives, whether or not it triggers a fresh vision
+    # call, proves sharing is still active — this is what keeps a static
+    # slide from going "stale" just because it hasn't visually changed.
+    runtime.slide.last_frame_at = now
+    if new_thumb is not None:
+        runtime.slide.thumbnail = new_thumb
+
+    if previous_thumb is not None and diff < config.SLIDE_FRAME_DIFF_THRESHOLD:
+        # Slide hasn't visibly changed since the last processed frame —
+        # skip the (comparatively expensive) vision call entirely.
+        return {"processed": False, "slide": _slide_snapshot(runtime)}
+
+    read = slide_vision.read_slide(frame)
+    if read["confidence"] == "high":
+        runtime.slide.slide_title = read["slide_title"]
+        runtime.slide.key_text = read["key_text"]
+        runtime.slide.confidence = "high"
+    # else: low-confidence read, discarded per spec — deliberately NOT
+    # cleared here either. A single bad frame (transition, glare) shouldn't
+    # wipe out a still-relevant title; staleness (see _current_slide_signal)
+    # is what eventually retires an old read if sharing actually stopped.
+
+    return {"processed": True, "slide": _slide_snapshot(runtime)}
+
+
+def _current_slide_signal(runtime: SessionRuntime, now: float) -> Optional[Dict[str, Optional[str]]]:
+    """The slide's title/text if a fresh, high-confidence read exists,
+    else None — meaning "behave exactly as if slide capture were off"."""
+    slide = runtime.slide
+    if slide.confidence != "high" or not slide.slide_title:
+        return None
+    if now - slide.last_frame_at > config.SLIDE_STALENESS_SECONDS:
+        return None
+    return {"slide_title": slide.slide_title, "key_text": slide.key_text}
+
+
 def match_topic(session_id: str, now: Optional[float] = None) -> List[retrieval.ScoredChunk]:
-    """Run topic matching against the recent transcript window and log it."""
+    """Run topic matching against the recent transcript window, and — when
+    a fresh slide read is available — also against the slide's title/text,
+    then merge. Run and log exactly as before when no slide signal exists
+    (the default: nothing changes if this feature is never used)."""
     runtime = _get_runtime(session_id)
     now = now if now is not None else time.time()
     window_text = _recent_transcript_window(runtime, now, config.MATCH_WINDOW_SECONDS)
+    slide_signal = _current_slide_signal(runtime, now)
 
-    if not window_text.strip() or runtime.embeddings.shape[0] == 0:
-        top_chunks: List[retrieval.ScoredChunk] = []
-    else:
-        query_vec = ingestion.embed_text(window_text)
-        top_chunks = retrieval.top_k_chunks(
-            query_vec, runtime.chunk_ids, runtime.chunk_texts, runtime.embeddings
-        )
+    top_chunks: List[retrieval.ScoredChunk] = []
+    if runtime.embeddings.shape[0] > 0:
+        # Merge strategy: take the MAX score per chunk across the
+        # transcript-window query and the slide-text query, not an
+        # average. A slide title is a direct, unambiguous topic signal;
+        # averaging it against a possibly-weak or off-topic transcript
+        # score for that same chunk would water down a strong match
+        # instead of trusting it. Whichever signal is more confident about
+        # a given chunk wins for that chunk.
+        best_by_id: Dict[str, retrieval.ScoredChunk] = {}
+        all_ids_k = len(runtime.chunk_ids)
+
+        if window_text.strip():
+            query_vec = ingestion.embed_text(window_text)
+            for c in retrieval.top_k_chunks(
+                query_vec, runtime.chunk_ids, runtime.chunk_texts, runtime.embeddings, k=all_ids_k
+            ):
+                best_by_id[c.chunk_id] = c
+
+        if slide_signal:
+            slide_query = f"{slide_signal['slide_title']}. {slide_signal['key_text'] or ''}".strip()
+            slide_vec = ingestion.embed_text(slide_query)
+            for c in retrieval.top_k_chunks(
+                slide_vec, runtime.chunk_ids, runtime.chunk_texts, runtime.embeddings, k=all_ids_k
+            ):
+                existing = best_by_id.get(c.chunk_id)
+                if existing is None or c.score > existing.score:
+                    best_by_id[c.chunk_id] = c
+
+        top_chunks = sorted(best_by_id.values(), key=lambda c: -c.score)[: config.RETRIEVAL_TOP_K]
 
     session_log.log_event(
         runtime.session,
         "topic_match",
         window_text_preview=_chunk_preview(window_text, 20),
+        slide_informed=slide_signal is not None,
         top_chunks=[
             {"chunk_id": c.chunk_id, "score": c.score, "preview": _chunk_preview(c.text)}
             for c in top_chunks
@@ -144,8 +248,10 @@ def tick(session_id: str, now: Optional[float] = None, force: bool = False) -> D
     reason = decision.reason if decision.triggered else "manual"
     top_chunks = match_topic(session_id, now)
     window_text = _recent_transcript_window(runtime, now, config.MATCH_WINDOW_SECONDS)
+    slide_signal = _current_slide_signal(runtime, now)
+    slide_text = slide_signal["key_text"] or slide_signal["slide_title"] if slide_signal else None
 
-    question_text = question_gen.generate_question(top_chunks, window_text)
+    question_text = question_gen.generate_question(top_chunks, window_text, slide_text=slide_text)
 
     event = session_log.log_event(
         runtime.session,
@@ -154,6 +260,7 @@ def tick(session_id: str, now: Optional[float] = None, force: bool = False) -> D
         trigger_reason=reason,
         shown=True,
         topic_chunk_ids=[c.chunk_id for c in top_chunks],
+        slide_informed=slide_signal is not None,
     )
     runtime.pacing.note_question_shown(now)
     storage.save_session(runtime.session)
@@ -165,6 +272,7 @@ def tick(session_id: str, now: Optional[float] = None, force: bool = False) -> D
         "timestamp": event["timestamp"],
         "topic_chunks": [{"chunk_id": c.chunk_id, "preview": _chunk_preview(c.text)} for c in top_chunks],
         "ai_label": config.AI_LABEL,
+        "slide_informed": slide_signal is not None,
     }
 
 

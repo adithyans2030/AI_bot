@@ -48,6 +48,10 @@ class TickRequest(BaseModel):
     force: bool = False
 
 
+class FrameRequest(BaseModel):
+    frame: str  # base64 JPEG, raw or as a data URL
+
+
 # --- Health ---
 
 @app.get("/health")
@@ -142,6 +146,21 @@ def post_tick(session_id: str, req: TickRequest = TickRequest()):
     except session_manager.SessionNotFound:
         raise HTTPException(404, "Session not found or already ended")
     return result
+
+
+@app.post("/sessions/{session_id}/frame")
+def post_frame(session_id: str, req: FrameRequest):
+    """Optional: a captured slide frame, sent only while the teacher has
+    chosen to share a window/tab/screen. Perception only — this can never
+    trigger a question by itself, only sharpen the next pacing-gated
+    tick()'s topic match. If nothing is ever posted here, the session
+    behaves exactly as it did before this endpoint existed."""
+    if not req.frame.strip():
+        raise HTTPException(400, "Frame is empty")
+    try:
+        return session_manager.process_frame(session_id, req.frame)
+    except session_manager.SessionNotFound:
+        raise HTTPException(404, "Session not found or already ended")
 
 
 @app.post("/sessions/{session_id}/note")

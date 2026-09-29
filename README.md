@@ -21,6 +21,13 @@ context in the original brief for the Phase 2 plan.
 Browser mic (Web Speech API) ──┐
 Paste-in textbox ───────────────┼──► POST /sessions/{id}/transcript
                                  │
+Screen share (optional) ──► frame every ~10s ──► POST /sessions/{id}/frame
+                                 │                        │
+                                 │          perceptual diff vs. last frame:
+                                 │          unchanged → skip; changed → local
+                                 │          vision model reads slide title/text
+                                 │          (never triggers anything by itself)
+                                 │
                     (server-side rolling transcript buffer per session)
                                  │
               every ~5s, frontend polls POST /sessions/{id}/tick
@@ -28,8 +35,9 @@ Paste-in textbox ───────────────┼──► POST 
                     pacing gate (12s silence OR 4 min interval)
                                  │         not triggered → {triggered: false}
                                  ▼
-        embed last ~90s of transcript → cosine similarity vs. stored
-        unit chunks (local sentence-transformers + numpy, no paid API)
+    embed last ~90s of transcript (+ slide title/text, if fresh) → cosine
+    similarity vs. stored unit chunks, merged by max score per chunk
+    (local sentence-transformers + numpy, no paid API)
                                  │
                     top-3 chunks → local LLM question generation (Ollama)
                                  │
@@ -87,6 +95,38 @@ question) on a 4GB-VRAM GTX 1650 going from a 5.6GB-loaded model to a
 2GB-loaded one. Check `ollama ps` after a request to see whether your model
 landed on `100% GPU` or split — if it split, pick a smaller model.
 
+### Optional: slide-aware topic matching
+
+If the teacher shares a slide window (via the "Share slide" button, only
+appears once a session is running), the app periodically reads it with a
+second, vision-capable local model and uses the slide's title/text as an
+*additional* topic-matching signal alongside the transcript — it never
+replaces transcript matching, and it can never trigger a question by
+itself; it only sharpens the existing pacing-gated tick. If sharing is
+never used, nothing about this changes: pure transcript-only matching,
+same as before this feature existed.
+
+```bash
+ollama pull moondream   # ~1.7GB, fits comfortably in 4GB VRAM
+```
+
+`LLM_VISION_MODEL` is separate from `LLM_MODEL` on purpose — the vision
+call happens far more often (every ~10s of sharing vs. once per question),
+so it needs to be small enough to stay fast; a 7B+ vision model would hit
+the same slow CPU/GPU-split problem described above. A cheap perceptual
+check (`SLIDE_FRAME_DIFF_THRESHOLD` in `.env`) skips the vision call
+entirely when the slide hasn't visibly changed since the last frame.
+
+> **Known limitation on this machine:** `ollama pull moondream` fails here
+> with `tls: failed to verify certificate: x509: certificate signed by
+> unknown authority` — a TLS-inspecting proxy/VPN on this network that
+> Ollama's Go runtime doesn't trust, not a bug in this codebase. The
+> merge/staleness/discard logic is fully implemented and covered by
+> `tests/test_slide_session_integration.py` (mocks just the vision call),
+> and the live endpoint was verified to fail gracefully — no crash, clean
+> low-confidence fallback — when the model isn't present. The actual vision
+> call itself needs testing on a network where the pull succeeds.
+
 ## Running
 
 **Production-style (single origin, matches how it'll actually be used):**
@@ -139,9 +179,10 @@ cd backend
 pytest
 ```
 
-Two kinds of coverage, in one run:
-- **Pure-logic unit tests** (chunking, cosine similarity, pacing gate) — no
-  model, no network, sub-second.
+Three kinds of coverage, in one run:
+- **Pure-logic unit tests** (chunking, cosine similarity, pacing gate,
+  frame-thumbnail diffing, vision-response parsing) — no model, no
+  network, sub-second.
 - **API integration tests** (`tests/test_api.py`, via FastAPI's
   `TestClient`) — real unit ingestion, real local embeddings, a full
   session lifecycle, and a regression test for the SPA-fallback routing.
@@ -149,6 +190,11 @@ Two kinds of coverage, in one run:
   session), so they don't need Ollama running — but they do load the
   embedding model for real, so the first run after a fresh interpreter is
   slow (~90s, one-time cold start), not instant.
+- **Slide-signal integration tests** (`tests/test_slide_session_integration.py`)
+  — the merge/staleness/discard logic around slide capture, with real
+  embeddings but a mocked vision call (`slide_vision.read_slide`), so they
+  don't need a vision model pulled. Includes a baseline-regression test
+  confirming matching is untouched when slide capture is never used.
 
 ### Manual end-to-end dry run (per the build order)
 
@@ -165,6 +211,12 @@ Two kinds of coverage, in one run:
 6. End the session and check the report: duration, topics matched, every
    question with a timestamp, any teacher notes — and confirm there is no
    attendance figure anywhere in it.
+7. Optional: pull a vision model (`ollama pull moondream`) and click
+   "Share slide" during a session, sharing a window with the unit's slides.
+   Watch the status line for a detected slide title; end the session and
+   confirm at least one question in the report has `slide_informed: true`.
+   Stop sharing mid-session (either button) and confirm nothing breaks —
+   matching should just fall back to transcript-only after ~30s.
 
 ## Project layout
 
@@ -174,27 +226,29 @@ backend/
     config.py        # single source of truth: local-LLM URL/model, thresholds
     ingestion.py      # chunking (pure) + local embedding
     retrieval.py      # cosine similarity top-k search
-    question_gen.py   # local LLM (Ollama) call, grounded prompt
-    pacing.py         # silence/interval trigger gate (pure, testable)
-    session_manager.py# in-memory runtime: transcript buffer + orchestration
-    session_log.py     # event log + honest report generation
-    storage.py         # local JSON persistence for units + sessions
-    main.py             # FastAPI routes + static frontend mount + SPA fallback
-  data/                 # local JSON storage (git-ignored contents)
-  tests/                 # pytest: ingestion/retrieval/pacing (pure) +
-                          # test_api.py (FastAPI TestClient integration tests)
+    question_gen.py   # local LLM (Ollama) call, grounded prompt (+ optional slide text)
+    slide_vision.py    # optional: reads a shared slide frame (separate local vision model)
+    pacing.py            # silence/interval trigger gate (pure, testable)
+    session_manager.py    # in-memory runtime: transcript buffer, slide state, orchestration
+    session_log.py         # event log + honest report generation
+    storage.py               # local JSON persistence for units + sessions
+    main.py                   # FastAPI routes + static frontend mount + SPA fallback
+  data/                         # local JSON storage (git-ignored contents)
+  tests/                         # pytest: ingestion/retrieval/pacing/slide_vision (pure) +
+                                  # test_api.py + test_slide_session_integration.py
 frontend/
   src/
     main.jsx              # react-router-dom entry: "/" -> LandingPage, "/app" -> App
     App.jsx                # the tool: top-level state + layout
     api.js                  # fetch wrapper for the backend
-    components/              # UnitPanel, SessionPanel, TranscriptPanel,
-                              # CohostPanel, NotesPanel, ReportPanel
-    styles.css                # tool theme, scoped under .app-shell
+    config.js                 # frontend tunables (poll interval, frame-capture interval)
+    components/                 # UnitPanel, SessionPanel, TranscriptPanel (mic +
+                                 # optional slide capture), CohostPanel, NotesPanel, ReportPanel
+    styles.css                    # tool theme, scoped under .app-shell
     pages/
-      LandingPage.jsx          # marketing page (its own route, "/")
-      LandingPage.css           # scoped under .landing-page
-      ProductPreviewCard.jsx    # illustrative mock session card
+      LandingPage.jsx              # marketing page (its own route, "/")
+      LandingPage.css               # scoped under .landing-page
+      ProductPreviewCard.jsx        # illustrative mock session card
   index.html / vite.config.js / package.json
   dist/                   # `npm run build` output — served by FastAPI (git-ignored)
 samples/

@@ -27,6 +27,32 @@ LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:11434/v1")
 # hardware can actually hold it in VRAM.
 LLM_MODEL = os.environ.get("LLM_MODEL", "gemma2:2b")
 
+# --- Slide vision (optional, only used when the teacher shares a slide) ---
+# A separate, smaller model than LLM_MODEL — vision models are heavier
+# per-parameter, and this call happens far more often (every ~10s of
+# sharing vs. once per question), so it needs to be small enough to stay
+# fast on the same GPU. moondream (~1.7GB) fits comfortably in 4GB VRAM;
+# a 7B+ vision model like llava would spill into slow CPU/GPU split
+# inference the same way llama3.1 did for text generation (see LLM_MODEL
+# above) — verified that failure mode already, don't repeat it here.
+LLM_VISION_MODEL = os.environ.get("LLM_VISION_MODEL", "moondream")
+
+# How often the frontend samples a frame while a slide is being shared.
+SLIDE_CAPTURE_INTERVAL_SECONDS = int(os.environ.get("SLIDE_CAPTURE_INTERVAL_SECONDS", "10"))
+# A slide read older than this is considered stale (sharing likely
+# stopped, or the frontend stopped sending frames) and topic matching
+# falls back to transcript-only, exactly as if slide capture was never
+# turned on.
+SLIDE_STALENESS_SECONDS = int(os.environ.get("SLIDE_STALENESS_SECONDS", "30"))
+# Skip the (comparatively expensive) vision call when the new frame's
+# downscaled thumbnail is nearly identical to the last processed one —
+# i.e. the slide hasn't visibly changed. 0.0 = identical thumbnails,
+# larger = more different. This is a mean-pixel-difference on a 16x16
+# grayscale thumbnail, normalized to [0, 1]; empirically, an actual slide
+# change lands well above 0.05, minor re-encode/cursor noise stays well
+# below it.
+SLIDE_FRAME_DIFF_THRESHOLD = float(os.environ.get("SLIDE_FRAME_DIFF_THRESHOLD", "0.05"))
+
 # --- Embeddings ---
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 

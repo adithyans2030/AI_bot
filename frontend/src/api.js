@@ -24,6 +24,7 @@ export const api = {
   postTranscript: (sessionId, text, timestamp) =>
     post(`/sessions/${sessionId}/transcript`, { text, timestamp }),
   tick: (sessionId, force = false) => post(`/sessions/${sessionId}/tick`, { force }),
+  postFrame: (sessionId, frame) => post(`/sessions/${sessionId}/frame`, { frame }),
   addNote: (sessionId, text) => post(`/sessions/${sessionId}/note`, { text }),
   endSession: (sessionId) => post(`/sessions/${sessionId}/end`),
 };
