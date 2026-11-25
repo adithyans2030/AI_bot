@@ -15,6 +15,8 @@ backend/data/units/*.json
 backend/data/sessions/*.json
 !backend/data/units/.gitkeep
 !backend/data/sessions/.gitkeep
+# LTI tool key and app secret: never commit
+backend/data/lti/
 
 # Sentence-transformers model cache if ever downloaded locally
 backend/.model_cache/

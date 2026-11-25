@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
-import { SLIDE_CAPTURE_INTERVAL_SECONDS } from "../config.js";
+import {
+  ACTIVITY_POST_THROTTLE_MS,
+  SLIDE_CAPTURE_INTERVAL_SECONDS,
+  VAD_MIN_SPEECH_MS,
+  VAD_RMS_THRESHOLD,
+} from "../config.js";
+import { startVoiceActivityDetector } from "../vad.js";
 
 function speechRecognitionSupported() {
   return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
@@ -30,6 +36,9 @@ export default function TranscriptPanel({ session, entries, onSendChunk }) {
     screenCaptureSupported() ? "" : "Screen sharing not supported in this browser."
   );
   const [detectedSlide, setDetectedSlide] = useState(null);
+  // True for a few seconds after someone in the class was heard in the
+  // shared Meet tab's audio (human priority: questions are held meanwhile).
+  const [classSpeaking, setClassSpeaking] = useState(false);
 
   const recognitionRef = useRef(null);
   const listeningRef = useRef(false);
@@ -39,6 +48,11 @@ export default function TranscriptPanel({ session, entries, onSendChunk }) {
   const videoRef = useRef(null);
   const captureIntervalRef = useRef(null);
   const sharingRef = useRef(false);
+
+  const audioContextRef = useRef(null);
+  const stopVadRef = useRef(null);
+  const lastActivityPostRef = useRef(0);
+  const speakingTimeoutRef = useRef(null);
 
   // Stop listening + sharing whenever the session ends.
   useEffect(() => {
@@ -164,11 +178,41 @@ export default function TranscriptPanel({ session, entries, onSendChunk }) {
     }
   }
 
+  // Someone in the class (not the teacher — Meet never plays your own voice
+  // back) is speaking in the shared Meet tab. Tell the backend so it holds
+  // questions; only the fact is sent, never audio or words.
+  function handleClassSpeech() {
+    setClassSpeaking(true);
+    clearTimeout(speakingTimeoutRef.current);
+    speakingTimeoutRef.current = setTimeout(() => setClassSpeaking(false), 3000);
+
+    const now = Date.now();
+    if (!session || now - lastActivityPostRef.current < ACTIVITY_POST_THROTTLE_MS) return;
+    lastActivityPostRef.current = now;
+    api.postParticipantActivity(session.sessionId).catch((err) => {
+      console.error("Participant activity send failed:", err);
+    });
+  }
+
+  function stopClassAudio() {
+    if (stopVadRef.current) {
+      stopVadRef.current();
+      stopVadRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+    clearTimeout(speakingTimeoutRef.current);
+    setClassSpeaking(false);
+  }
+
   function stopSlideCapture() {
     sharingRef.current = false;
     setSharingSlide(false);
     setSlideStatus("");
     setDetectedSlide(null);
+    stopClassAudio();
     if (captureIntervalRef.current) {
       clearInterval(captureIntervalRef.current);
       captureIntervalRef.current = null;
@@ -185,17 +229,47 @@ export default function TranscriptPanel({ session, entries, onSendChunk }) {
       setSlideStatus("Screen sharing not supported in this browser.");
       return;
     }
+    // Created now, while still inside the click, so the browser lets it run
+    // (an AudioContext made after the share picker closes can start muted).
+    const AudioContextImpl = window.AudioContext || window.webkitAudioContext;
+    const audioContext = AudioContextImpl ? new AudioContextImpl() : null;
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      // Share the Google Meet tab: its picture carries the slides the teacher
+      // presents, and with "Also share tab audio" ticked its sound carries
+      // the class (everyone except the teacher).
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: true,
+        selfBrowserSurface: "exclude",
+      });
       const video = document.createElement("video");
       video.srcObject = stream;
+      video.muted = true;
       await video.play();
 
       streamRef.current = stream;
       videoRef.current = video;
       sharingRef.current = true;
       setSharingSlide(true);
-      setSlideStatus("Sharing — reading slides every ~" + SLIDE_CAPTURE_INTERVAL_SECONDS + "s");
+
+      const audioTracks = stream.getAudioTracks();
+      if (audioContext && audioTracks.length > 0) {
+        await audioContext.resume();
+        audioContextRef.current = audioContext;
+        stopVadRef.current = startVoiceActivityDetector(audioContext, new MediaStream(audioTracks), {
+          threshold: VAD_RMS_THRESHOLD,
+          minSpeechMs: VAD_MIN_SPEECH_MS,
+          onSpeech: handleClassSpeech,
+        });
+        setSlideStatus(
+          `Sharing the Meet tab — reading slides every ~${SLIDE_CAPTURE_INTERVAL_SECONDS}s and holding questions while class members speak`
+        );
+      } else {
+        if (audioContext) audioContext.close();
+        setSlideStatus(
+          `Sharing slides only (no tab audio). To hold questions while students speak, stop and share the Meet tab again with "Also share tab audio" ticked.`
+        );
+      }
 
       // Teacher used the browser's own "Stop sharing" control, not our
       // button — revert cleanly either way.
@@ -203,6 +277,7 @@ export default function TranscriptPanel({ session, entries, onSendChunk }) {
 
       captureIntervalRef.current = setInterval(sendFrame, SLIDE_CAPTURE_INTERVAL_SECONDS * 1000);
     } catch (err) {
+      if (audioContext && audioContextRef.current !== audioContext) audioContext.close();
       // Most commonly: the teacher dismissed the picker. Not an error worth
       // alarming over — sharing is optional and the app works fully without it.
       setSlideStatus(err.name === "NotAllowedError" ? "" : `Could not start sharing: ${err.message}`);
@@ -229,13 +304,16 @@ export default function TranscriptPanel({ session, entries, onSendChunk }) {
 
       <div className="row">
         <button className="secondary" onClick={toggleSlideCapture} disabled={!session}>
-          {sharingSlide ? "⏹ Stop sharing" : "🖥 Share slide (optional)"}
+          {sharingSlide ? "⏹ Stop sharing" : "🖥 Share Meet tab (optional)"}
         </button>
         <span className="status-line">
           {slideStatus}
           {detectedSlide ? ` — detected: "${detectedSlide}"` : ""}
         </span>
       </div>
+      {classSpeaking && (
+        <div className="status-line">🗣 Someone in the class is speaking — questions are on hold.</div>
+      )}
 
       <span className="eyebrow">Paste-in mode (for testing without a live mic)</span>
       <div className="row">

@@ -12,7 +12,9 @@ from typing import Any, Dict, List
 from . import config
 
 
-def new_session_record(session_id: str, unit_id: str, unit_name: str, started_at: float) -> Dict[str, Any]:
+def new_session_record(
+    session_id: str, unit_id: str, unit_name: str, started_at: float, total_chunks: int = 0
+) -> Dict[str, Any]:
     session = {
         "id": session_id,
         "unit_id": unit_id,
@@ -20,6 +22,12 @@ def new_session_record(session_id: str, unit_id: str, unit_name: str, started_at
         "started_at": started_at,
         "ended_at": None,
         "ai_label": config.AI_LABEL,
+        # Snapshotted at session start so the report can compute coverage
+        # (topics_covered / topics_total below) purely from the persisted
+        # log, without needing the in-memory SessionRuntime — works the
+        # same whether the report is requested for an active session or
+        # loaded from disk after the session ended.
+        "total_chunks": total_chunks,
         "transcript": [],
         "log": [],
     }
@@ -48,14 +56,25 @@ def generate_report(session: Dict[str, Any]) -> Dict[str, Any]:
     topic_matches = [e for e in session["log"] if e["type"] == "topic_match"]
     notes = [e for e in session["log"] if e["type"] == "teacher_note"]
 
-    topics_covered = []
+    topics_covered_preview = []
     seen = set()
     for m in topic_matches:
         for c in m.get("top_chunks", []):
             key = c["chunk_id"]
             if key not in seen:
                 seen.add(key)
-                topics_covered.append(c["preview"])
+                topics_covered_preview.append(c["preview"])
+
+    # Coverage: which unit chunks were actually the basis of a fired
+    # question this session — mirrors SessionRuntime.asked_chunk_ids, but
+    # derived purely from the persisted log (topic_chunk_ids on each
+    # question_generated event), so this works identically for an active
+    # session or one already ended and reloaded from disk. This is
+    # deliberately topic/content coverage, never attendance or
+    # participation — "X of Y unit topics were touched," full stop.
+    covered_chunk_ids = set()
+    for q in questions:
+        covered_chunk_ids.update(q.get("topic_chunk_ids", []))
 
     return {
         "session_id": session["id"],
@@ -69,7 +88,9 @@ def generate_report(session: Dict[str, Any]) -> Dict[str, Any]:
         "duration_seconds": duration_seconds,
         "duration_minutes": round(duration_seconds / 60, 1),
         "topic_match_count": len(topic_matches),
-        "topics_covered_preview": topics_covered,
+        "topics_covered_preview": topics_covered_preview,
+        "topics_covered": len(covered_chunk_ids),
+        "topics_total": session.get("total_chunks", 0),
         "questions": [
             {
                 "timestamp": q["timestamp"],
@@ -78,6 +99,7 @@ def generate_report(session: Dict[str, Any]) -> Dict[str, Any]:
                 "trigger_reason": q.get("trigger_reason"),
                 "shown": q.get("shown", True),
                 "slide_informed": q.get("slide_informed", False),
+                "wrap_up": q.get("wrap_up", False),
             }
             for q in questions
         ],
@@ -98,6 +120,7 @@ def render_report_markdown(report: Dict[str, Any]) -> str:
     lines.append(f"- Start: {report['started_at_iso']}")
     lines.append(f"- End: {report['ended_at_iso']}")
     lines.append(f"- Duration: {report['duration_minutes']} minutes")
+    lines.append(f"- Unit coverage: {report['topics_covered']} of {report['topics_total']} unit topics touched")
     lines.append("")
     lines.append(f"## Topics matched ({report['topic_match_count']} topic-match events)")
     if report["topics_covered_preview"]:
@@ -111,7 +134,8 @@ def render_report_markdown(report: Dict[str, Any]) -> str:
         for q in report["questions"]:
             reason = f" _(trigger: {q['trigger_reason']})_" if q.get("trigger_reason") else ""
             slide_tag = " _(slide-informed)_" if q.get("slide_informed") else ""
-            lines.append(f"- [{q['timestamp_iso']}] {q['question']}{reason}{slide_tag}")
+            wrap_up_tag = " _(wrap-up)_" if q.get("wrap_up") else ""
+            lines.append(f"- [{q['timestamp_iso']}] {q['question']}{reason}{slide_tag}{wrap_up_tag}")
     else:
         lines.append("- (no questions were generated this session)")
     lines.append("")

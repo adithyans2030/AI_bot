@@ -63,15 +63,66 @@ CHUNK_MAX_WORDS = int(os.environ.get("CHUNK_MAX_WORDS", "300"))
 # --- Retrieval ---
 RETRIEVAL_TOP_K = int(os.environ.get("RETRIEVAL_TOP_K", "3"))
 MATCH_WINDOW_SECONDS = int(os.environ.get("MATCH_WINDOW_SECONDS", "90"))
+# Coverage tracking: soft score penalty applied to a chunk already used for
+# a fired question this session, so repeated pacing triggers on similar
+# content don't just re-surface the same chunk (see SessionRuntime.asked_chunk_ids
+# and retrieval.top_k_chunks in session_manager.py / retrieval.py).
+COVERAGE_REPEAT_PENALTY = float(os.environ.get("COVERAGE_REPEAT_PENALTY", "0.15"))
+# Above this fraction of unit chunks already covered, /wrap-up treats the
+# session as sufficiently covered and returns a status line instead of
+# generating more questions (session_manager.wrap_up).
+COVERAGE_WRAP_UP_THRESHOLD = float(os.environ.get("COVERAGE_WRAP_UP_THRESHOLD", "0.8"))
 
 # --- Pacing gate ---
 PACING_SILENCE_SECONDS = int(os.environ.get("PACING_SILENCE_SECONDS", "12"))
 PACING_MAX_INTERVAL_SECONDS = int(os.environ.get("PACING_MAX_INTERVAL_SECONDS", "240"))
 
+# Human priority: when anyone in the class (not the teacher) is heard in the
+# shared Meet tab's audio, hold off on firing a question for this many
+# seconds — the agent only fills genuine silence, it never talks over a
+# real student. Also discards a question that finished generating after a
+# student started speaking. Participant activity is held in memory only and
+# never logged or reported (no participation data, same guardrail as
+# attendance).
+PARTICIPANT_HOLD_SECONDS = int(os.environ.get("PARTICIPANT_HOLD_SECONDS", "15"))
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    return os.environ.get(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
 # --- Storage ---
 DATA_DIR = BACKEND_DIR / "data"
 UNITS_DIR = DATA_DIR / "units"
 SESSIONS_DIR = DATA_DIR / "sessions"
+LTI_DIR = DATA_DIR / "lti"
+
+# --- Authentication (Moodle LTI 1.3) ---
+# Off by default so local development and the test suite work without a
+# Moodle. Turn on for any real deployment: every /units and /sessions route
+# then requires a token issued by a successful Moodle LTI launch, and only
+# teachers (Instructor / Administrator roles) get one.
+AUTH_REQUIRED = _env_bool("AUTH_REQUIRED", False)
+# Public base URL of this tool, exactly as Moodle reaches it (used to build
+# the LTI redirect_uri). No trailing slash.
+TOOL_BASE_URL = os.environ.get("TOOL_BASE_URL", "http://localhost:8000").rstrip("/")
+# The Moodle site's wwwroot, e.g. https://onlinecourses.example.edu — this
+# is the LTI "Platform ID" (issuer) Moodle shows after registering the tool.
+LTI_PLATFORM_ISSUER = os.environ.get("LTI_PLATFORM_ISSUER", "").rstrip("/")
+LTI_CLIENT_ID = os.environ.get("LTI_CLIENT_ID", "")
+# Comma-separated: one tool registration can have several deployments.
+LTI_DEPLOYMENT_IDS = [d.strip() for d in os.environ.get("LTI_DEPLOYMENT_IDS", "").split(",") if d.strip()]
+# Moodle's standard LTI 1.3 endpoints, derived from the issuer unless overridden.
+LTI_AUTH_LOGIN_URL = os.environ.get("LTI_AUTH_LOGIN_URL", f"{LTI_PLATFORM_ISSUER}/mod/lti/auth.php")
+LTI_PLATFORM_KEYSET_URL = os.environ.get("LTI_PLATFORM_KEYSET_URL", f"{LTI_PLATFORM_ISSUER}/mod/lti/certs.php")
+# The tool's own RSA key (served at /lti/jwks). Generated on first use if
+# the file doesn't exist. Keep it out of git — it lives under data/lti/.
+LTI_TOOL_PRIVATE_KEY_PATH = Path(os.environ.get("LTI_TOOL_PRIVATE_KEY_PATH", str(LTI_DIR / "tool_private_key.pem")))
+# Secret for signing the app's own session tokens after a launch. If unset,
+# one is generated and persisted under data/lti/ on first use.
+APP_SECRET = os.environ.get("APP_SECRET", "")
+# How long a teacher stays signed in after launching from Moodle.
+APP_TOKEN_TTL_SECONDS = int(os.environ.get("APP_TOKEN_TTL_SECONDS", str(8 * 3600)))
 
 # --- Identity guardrail ---
 # Always use this label for the AI in UI copy, prompts, and logs. Never

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "./api.js";
 import { TICK_POLL_MS } from "./config.js";
 import UnitPanel from "./components/UnitPanel.jsx";
@@ -16,6 +16,8 @@ function formatElapsed(totalSeconds) {
 }
 
 export default function App() {
+  // {auth_required, authenticated, name, course_title} from /auth/me; null while loading.
+  const [auth, setAuth] = useState(null);
   const [units, setUnits] = useState([]);
   const [selectedUnitId, setSelectedUnitId] = useState("");
 
@@ -29,16 +31,41 @@ export default function App() {
   const [currentQuestion, setCurrentQuestion] = useState("");
   const [report, setReport] = useState(null);
 
+  const [wrapUpResult, setWrapUpResult] = useState(null);
+  const [wrapUpPending, setWrapUpPending] = useState(false);
+
   // Purely a display clock for the compact session bar's elapsed-time badge —
   // doesn't touch session/report state or the backend.
   const [nowTick, setNowTick] = useState(() => Date.now() / 1000);
+
+  // A real local LLM call routinely takes longer than TICK_POLL_MS, so the
+  // 5s poll can easily fire again before the previous tick() request has
+  // even resolved. The backend now guards against this too (a per-session
+  // lock), but skipping here avoids piling up redundant in-flight requests
+  // at the source.
+  const tickInFlightRef = useRef(false);
 
   async function reloadUnits() {
     setUnits(await api.listUnits());
   }
 
   useEffect(() => {
-    reloadUnits();
+    (async () => {
+      let me;
+      try {
+        me = await api.me();
+      } catch (err) {
+        me = { auth_required: false, authenticated: false };
+        setSessionStatus(`Could not reach the server: ${err.message}`);
+      }
+      setAuth(me);
+      if (me.auth_required && !me.authenticated) return;
+      try {
+        await reloadUnits();
+      } catch (err) {
+        setSessionStatus(`Could not load units: ${err.message}`);
+      }
+    })();
   }, []);
 
   useEffect(() => {
@@ -81,6 +108,7 @@ export default function App() {
       setCurrentTopic("");
       setCurrentQuestion("");
       setReport(null);
+      setWrapUpResult(null);
     } catch (err) {
       setSessionStatus(`Error starting session: ${err.message}`);
     }
@@ -113,7 +141,8 @@ export default function App() {
   }
 
   async function tick(force) {
-    if (!session) return;
+    if (!session || tickInFlightRef.current) return;
+    tickInFlightRef.current = true;
     try {
       const result = await api.tick(session.sessionId, force);
       if (result.triggered) {
@@ -128,6 +157,8 @@ export default function App() {
       }
     } catch (err) {
       setSessionStatus(`Tick error: ${err.message}`);
+    } finally {
+      tickInFlightRef.current = false;
     }
   }
 
@@ -141,7 +172,50 @@ export default function App() {
     }
   }
 
+  async function handleWrapUp() {
+    if (!session) return;
+    setWrapUpPending(true);
+    try {
+      const result = await api.wrapUp(session.sessionId);
+      setWrapUpResult(result);
+      if (result.generated) {
+        // Reuse the exact same questionEntries shape/rendering tick()
+        // already uses — "reason" already supports arbitrary trigger
+        // labels, so a wrap-up question just becomes another one, tagged
+        // accordingly, with no new UI needed in CohostPanel.
+        setQuestionEntries((prev) => [
+          ...prev,
+          ...result.questions.map((q) => ({ timestamp: q.timestamp, text: q.question, reason: "wrap_up" })),
+        ]);
+        const last = result.questions[result.questions.length - 1];
+        setCurrentQuestion(last.question);
+      }
+    } catch (err) {
+      setSessionStatus(`Wrap-up error: ${err.message}`);
+    } finally {
+      setWrapUpPending(false);
+    }
+  }
+
   const pillMode = session ? "listening" : report ? "ended" : null;
+
+  if (auth && auth.auth_required && !auth.authenticated) {
+    return (
+      <div className="app-shell">
+        <header className="app-header">
+          <h1>Doubt-Clearing AI Co-host</h1>
+        </header>
+        <section className="panel">
+          <h2>Open AI Co-host from Moodle</h2>
+          <p className="muted">
+            AI Co-host signs you in through your Moodle course. Go to your course, open the AI Co-host
+            activity, and it will open here, signed in. If you just did that, your sign-in may have
+            expired. Open it from Moodle again.
+          </p>
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -153,6 +227,12 @@ export default function App() {
         >
           🤖 AI Co-host — assistant, not a student. One participant, always labeled.
         </div>
+        {auth && auth.authenticated && (
+          <div className="status-line">
+            Signed in as {auth.name}
+            {auth.course_title ? ` · ${auth.course_title}` : ""}
+          </div>
+        )}
       </header>
 
       {pillMode && (
@@ -171,18 +251,27 @@ export default function App() {
       )}
 
       {session ? (
-        <div className="session-status-bar">
-          <div className="session-status-bar__meta">
-            <span className="unit-name">{session.unitName}</span>
-            <span className="timer">{formatElapsed(nowTick - session.startedAt)}</span>
+        <>
+          <div className="session-status-bar">
+            <div className="session-status-bar__meta">
+              <span className="unit-name">{session.unitName}</span>
+              <span className="timer">{formatElapsed(nowTick - session.startedAt)}</span>
+            </div>
+            <div className="session-status-bar__actions">
+              <span className="status-line">{sessionStatus}</span>
+              <button className="secondary" onClick={endSession}>
+                End session
+              </button>
+            </div>
           </div>
-          <div className="session-status-bar__actions">
-            <span className="status-line">{sessionStatus}</span>
-            <button className="secondary" onClick={endSession}>
-              End session
-            </button>
-          </div>
-        </div>
+
+          <SessionPanel
+            session={session}
+            onWrapUp={handleWrapUp}
+            wrapUpResult={wrapUpResult}
+            wrapUpPending={wrapUpPending}
+          />
+        </>
       ) : (
         <div className="setup-row">
           <UnitPanel

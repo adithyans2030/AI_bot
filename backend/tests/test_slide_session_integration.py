@@ -191,7 +191,7 @@ def test_question_generation_receives_slide_signal_and_logs_it(monkeypatch):
 
         captured = {}
 
-        def fake_generate_question(chunks, transcript_window, slide_text=None):
+        def fake_generate_question(chunks, transcript_window, slide_text=None, **kwargs):
             captured["slide_text"] = slide_text
             return "Fake question"
 

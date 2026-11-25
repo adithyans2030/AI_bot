@@ -43,7 +43,16 @@ def list_units() -> List[Dict[str, Any]]:
     units = []
     for path in sorted(config.UNITS_DIR.glob("*.json")):
         data = _read_json(path)
-        units.append({"id": data["id"], "name": data["name"], "num_chunks": len(data["chunks"])})
+        units.append(
+            {
+                "id": data["id"],
+                "name": data["name"],
+                "num_chunks": len(data["chunks"]),
+                # Moodle course the unit belongs to (None for units made
+                # with auth off) — used to scope what each teacher sees.
+                "course_id": data.get("course_id"),
+            }
+        )
     return units
 
 

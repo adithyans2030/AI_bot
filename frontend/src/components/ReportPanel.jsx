@@ -17,6 +17,8 @@ export default function ReportPanel({ report }) {
           <strong>End:</strong> {report.ended_at_iso}
           <br />
           <strong>Duration:</strong> {report.duration_minutes} minutes
+          <br />
+          <strong>Unit coverage:</strong> {report.topics_covered} of {report.topics_total} unit topics touched
         </div>
 
         <h3>Topics matched ({report.topic_match_count} events)</h3>
@@ -33,7 +35,7 @@ export default function ReportPanel({ report }) {
           {report.questions.length ? (
             report.questions.map((q, i) => (
               <li key={i}>
-                [{q.timestamp_iso}] {q.question} <em>({q.trigger_reason})</em>
+                [{q.timestamp_iso}] {q.question} <em>({q.trigger_reason}{q.wrap_up ? ", wrap-up" : ""})</em>
               </li>
             ))
           ) : (

@@ -172,6 +172,31 @@ before relying on the backend to serve the app directly at `:8000`.
 > not worth it for a local prototype, but don't leave `npm run dev` running
 > unattended on a shared machine.
 
+## Moodle sign-in (LTI 1.3) and Google Meet
+
+Locally, sign-in is off (`AUTH_REQUIRED=false`) and everything works as
+above. For a real deployment the tool runs inside Moodle:
+
+1. Host the backend on HTTPS and set `TOOL_BASE_URL` to that address.
+2. `GET /lti/setup` prints the values the Moodle admin enters under Site
+   administration > Plugins > External tool > Manage tools > Configure a
+   tool manually (LTI 1.3, keyset URL `/lti/jwks`, login URL `/lti/login`,
+   redirect `/lti/launch`, **launch container: New window**, email: never).
+3. Copy Moodle's Platform ID, Client ID and Deployment ID into `.env` as
+   `LTI_PLATFORM_ISSUER`, `LTI_CLIENT_ID`, `LTI_DEPLOYMENT_IDS`, and set
+   `AUTH_REQUIRED=true`.
+
+Teachers then open the AI Co-host activity in their course and land in
+`/app` already signed in; students who open it get a short notice instead.
+Units are scoped to the Moodle course, sessions to the teacher.
+
+In class, **Share Meet tab** with "Also share tab audio" ticked: the tab's
+picture gives the slide reader the presented slides, and its sound
+(everyone except the teacher; Meet never plays your own voice back) lets
+the co-host hold questions while a student is talking
+(`PARTICIPANT_HOLD_SECONDS`). Only the fact that someone spoke is sent;
+it's never logged or reported. Teachers should wear headphones.
+
 ## Testing
 
 ```bash

@@ -6,7 +6,7 @@ numpy matmul over stored chunk embeddings is more than fast enough for v1.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional, Set
 
 import numpy as np
 
@@ -37,11 +37,25 @@ def top_k_chunks(
     chunk_texts: List[str],
     embeddings: np.ndarray,
     k: int = config.RETRIEVAL_TOP_K,
+    asked_chunk_ids: Optional[Set[str]] = None,
+    penalty: float = config.COVERAGE_REPEAT_PENALTY,
 ) -> List[ScoredChunk]:
-    """Return the k chunks whose embeddings are closest to query_vec."""
+    """Return the k chunks whose embeddings are closest to query_vec.
+
+    If asked_chunk_ids is given, any chunk already in that set has
+    `penalty` subtracted from its similarity score before ranking — a
+    soft nudge toward uncovered material, never a hard exclusion. A chunk
+    that's still clearly the best match after the penalty is still
+    selectable: a good follow-up question on the same topic isn't
+    automatically a repeat.
+    """
     if embeddings.shape[0] == 0:
         return []
     scores = cosine_similarity(query_vec, embeddings)
+    if asked_chunk_ids:
+        for i, chunk_id in enumerate(chunk_ids):
+            if chunk_id in asked_chunk_ids:
+                scores[i] -= penalty
     k = min(k, len(scores))
     top_indices = np.argsort(-scores)[:k]
     return [

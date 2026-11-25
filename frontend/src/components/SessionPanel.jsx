@@ -1,4 +1,30 @@
-export default function SessionPanel({ statusText, onStart, canStart }) {
+// Session-lifecycle actions live here: the pre-session "Start" form, and
+// (once a session is running) the "Wrap up unit" coverage action. This
+// component decides which to render itself, based on whether `session` is
+// set — App.jsx renders it unconditionally rather than swapping it out for
+// the compact session-status-bar, since wrap-up needs to stay reachable
+// for the whole time a session is active, not just before it starts.
+export default function SessionPanel({ session, statusText, onStart, canStart, onWrapUp, wrapUpResult, wrapUpPending }) {
+  if (session) {
+    return (
+      <section className="panel" id="session-panel">
+        <span className="eyebrow">Unit coverage</span>
+        <div className="row">
+          <button className="secondary" onClick={onWrapUp} disabled={wrapUpPending}>
+            {wrapUpPending ? "Checking coverage…" : "Wrap up unit"}
+          </button>
+          {wrapUpResult && (
+            <span className="status-line">
+              {wrapUpResult.generated
+                ? `Generated ${wrapUpResult.questions.length} wrap-up question(s) — ${Math.round(wrapUpResult.coverage_ratio * 100)}% of the unit now covered.`
+                : wrapUpResult.message}
+            </span>
+          )}
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section className="panel" id="session-panel">
       <h2>Start a session</h2>
