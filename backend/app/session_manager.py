@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Set
 
 import numpy as np
 
-from . import config, ingestion, question_gen, retrieval, session_log, slide_vision, storage
+from . import config, controller, ingestion, question_gen, retrieval, session_log, slide_vision, storage
 from .pacing import PacingGate
 
 
@@ -56,6 +56,15 @@ class SessionRuntime:
     # only (see there for why): the endpoint that's actually polled
     # automatically and repeatedly, not the click-triggered ones.
     lock: threading.Lock = field(default_factory=threading.Lock)
+    # --- AI controller state (in memory; decisions are also in the log) ---
+    # Teacher's pause switch: while set, the co-host never acts on its own.
+    paused: bool = False
+    # When each question was asked, for the per-hour budget.
+    question_times: List[float] = field(default_factory=list)
+    # When the controller last consulted the AI (rate-limits LLM calls).
+    last_decision_at: Optional[float] = None
+    # The controller runs wrap-up at most once per session.
+    agent_wrap_up_done: bool = False
 
 
 ACTIVE_SESSIONS: Dict[str, SessionRuntime] = {}
@@ -83,7 +92,12 @@ def _load_unit_arrays(unit_id: str):
     return unit, chunk_ids, chunk_texts, embeddings
 
 
-def start_session(unit_id: str, owner_sub: Optional[str] = None, course_id: Optional[str] = None) -> Dict[str, Any]:
+def start_session(
+    unit_id: str,
+    owner_sub: Optional[str] = None,
+    course_id: Optional[str] = None,
+    class_minutes: Optional[int] = None,
+) -> Dict[str, Any]:
     unit, chunk_ids, chunk_texts, embeddings = _load_unit_arrays(unit_id)
     session_id = uuid.uuid4().hex[:12]
     now = time.time()
@@ -94,6 +108,8 @@ def start_session(unit_id: str, owner_sub: Optional[str] = None, course_id: Opti
     # so only that teacher can drive or read this session.
     session["owner_sub"] = owner_sub
     session["course_id"] = course_id
+    # Planned length, so the controller knows when the class is near its end.
+    session["class_minutes"] = class_minutes or config.CLASS_LENGTH_MINUTES
     storage.save_session(session)
 
     runtime = SessionRuntime(
@@ -304,27 +320,172 @@ def match_topic(session_id: str, now: Optional[float] = None) -> List[retrieval.
     return top_chunks
 
 
-def tick(session_id: str, now: Optional[float] = None, force: bool = False) -> Dict[str, Any]:
-    """Called periodically by the frontend. Fires a question if the pacing
-    gate allows it (or if force=True, for manual testing).
+def _slide_text(slide_signal: Optional[Dict[str, Optional[str]]]) -> Optional[str]:
+    return (slide_signal["key_text"] or slide_signal["slide_title"]) if slide_signal else None
 
-    Two guardrails live here, both hardening against real failure modes
-    seen in practice, not hypothetical ones:
+
+def _grounding_score(runtime: SessionRuntime, question: str, chunks: List[retrieval.ScoredChunk]) -> float:
+    """How closely a generated question matches the course chunks it was
+    based on (max cosine similarity, local embeddings). Low = off-topic."""
+    if not chunks or not question.strip() or runtime.embeddings.shape[0] == 0:
+        return 0.0
+    index_of = {chunk_id: i for i, chunk_id in enumerate(runtime.chunk_ids)}
+    rows = [index_of[c.chunk_id] for c in chunks if c.chunk_id in index_of]
+    if not rows:
+        return 0.0
+    scores = retrieval.cosine_similarity(ingestion.embed_text(question), runtime.embeddings[rows])
+    return float(np.max(scores))
+
+
+def _publish_question(
+    runtime: SessionRuntime,
+    now: float,
+    question_text: str,
+    top_chunks: List[retrieval.ScoredChunk],
+    slide_signal: Optional[Dict[str, Optional[str]]],
+    reason: str,
+    audience: str = "teacher",
+    agent: Optional[controller.Decision] = None,
+) -> Dict[str, Any]:
+    fields: Dict[str, Any] = {
+        "question": question_text,
+        "trigger_reason": reason,
+        "shown": True,
+        "topic_chunk_ids": [c.chunk_id for c in top_chunks],
+        "slide_informed": slide_signal is not None,
+        "audience": audience,
+    }
+    if agent is not None:
+        fields["agent_reason"] = agent.reason
+    event = session_log.log_event(runtime.session, "question_generated", **fields)
+    runtime.pacing.note_question_shown(now)
+    # Every fired question updates coverage — pacing-triggered, agent-chosen
+    # or force=True manual triggers alike, since all go through this path.
+    runtime.asked_chunk_ids.update(c.chunk_id for c in top_chunks)
+    runtime.question_times.append(now)
+    storage.save_session(runtime.session)
+
+    result = {
+        "triggered": True,
+        "reason": reason,
+        "question": question_text,
+        "timestamp": event["timestamp"],
+        "topic_chunks": [{"chunk_id": c.chunk_id, "preview": _chunk_preview(c.text)} for c in top_chunks],
+        "ai_label": config.AI_LABEL,
+        "slide_informed": slide_signal is not None,
+        "audience": audience,
+    }
+    if agent is not None:
+        result["agent"] = agent.as_dict()
+    return result
+
+
+def _generate_and_publish(
+    runtime: SessionRuntime,
+    session_id: str,
+    now: float,
+    reason: str,
+    *,
+    audience: str = "teacher",
+    agent: Optional[controller.Decision] = None,
+    check_participant: bool = True,
+    check_grounding: bool = False,
+) -> Dict[str, Any]:
+    """Retrieve, generate, check and publish one question. Shared by the
+    rules path and the agent path."""
+    agent_field = {"agent": agent.as_dict()} if agent is not None else {}
+
+    top_chunks = match_topic(session_id, now)
+    window_text = _recent_transcript_window(runtime, now, config.MATCH_WINDOW_SECONDS)
+    slide_signal = _current_slide_signal(runtime, now)
+    slide_text = _slide_text(slide_signal)
+
+    if not top_chunks and not window_text.strip() and not slide_text:
+        return {"triggered": False, "reason": "no_content", **agent_field}
+
+    # Previews of chunks asked about in EARLIER ticks this session —
+    # computed before this tick's own top_chunks are added.
+    asked_previews = _asked_previews(runtime)
+
+    participant_marker = runtime.pacing.last_participant_at
+    question_text = question_gen.generate_question(
+        top_chunks,
+        window_text,
+        slide_text=slide_text,
+        previously_asked_previews=asked_previews,
+        audience=audience,
+    )
+
+    # Human priority, part 2: generation takes seconds. If a student
+    # started speaking meanwhile, drop the question rather than talk over
+    # them. The gate isn't advanced, so it can fire again once the class
+    # goes quiet. (A manual force=True test question is kept.)
+    if check_participant and runtime.pacing.last_participant_at != participant_marker:
+        session_log.log_event(
+            runtime.session,
+            "question_suppressed",
+            reason="participant_spoke",
+            question=question_text,
+            topic_chunk_ids=[c.chunk_id for c in top_chunks],
+        )
+        storage.save_session(runtime.session)
+        return {"triggered": False, "reason": "participant_spoke", **agent_field}
+
+    # Off-topic guard: a question that can't be traced back to the course
+    # chunks it was based on is dropped, never shown.
+    if check_grounding:
+        score = _grounding_score(runtime, question_text, top_chunks)
+        if score < config.MIN_GROUNDING_SCORE:
+            session_log.log_event(
+                runtime.session,
+                "question_rejected",
+                reason="not_grounded",
+                grounding_score=round(score, 3),
+                question=question_text,
+                topic_chunk_ids=[c.chunk_id for c in top_chunks],
+            )
+            storage.save_session(runtime.session)
+            return {"triggered": False, "reason": "not_grounded", **agent_field}
+
+    return _publish_question(runtime, now, question_text, top_chunks, slide_signal, reason, audience, agent)
+
+
+def tick(session_id: str, now: Optional[float] = None, force: bool = False) -> Dict[str, Any]:
+    """Called every few seconds by the frontend. Decides whether AI Co-host
+    acts now, and if so carries the action out.
+
+    - force=True: the teacher's manual "Force question now" — always asks.
+    - CONTROLLER_MODE="agent" (default): the AI controller decides, with
+      code checks before and after (see controller.py).
+    - CONTROLLER_MODE="rules": the fixed pacing gate decides.
+
+    Guardrails that hold in every mode, hardening against real failure
+    modes seen in practice:
 
     1. Concurrency: a real local LLM call routinely takes longer than the
        frontend's poll interval, so overlapping tick() calls for the same
-       session are the normal case, not an edge case. Uses a non-blocking
-       per-session lock — if a previous tick() is still generating, this
-       one just no-ops instead of queueing up and firing a second,
-       redundant question once unblocked.
-    2. No fabricating from nothing: if there's truly no transcript, no
-       slide signal, and nothing matched, there's nothing to ground a
-       question in — generating one anyway means the model invents an
-       unrelated question for a random subject rather than admitting it
-       has nothing to ask about. Skip firing instead.
+       session are the normal case. A non-blocking per-session lock makes
+       a tick that finds another one in progress no-op instead of firing a
+       second, redundant question.
+    2. No fabricating from nothing: with no transcript, no slide signal and
+       nothing matched, there's nothing to ground a question in, so none
+       is generated.
+    3. Human priority: a student speaking holds questions, and a question
+       finished after a student started speaking is dropped.
     """
     runtime = _get_runtime(session_id)
     now = now if now is not None else time.time()
+
+    if force:
+        return _rules_tick(runtime, session_id, now, force=True)
+    if config.CONTROLLER_MODE == "agent":
+        return _agent_tick(runtime, session_id, now)
+    return _rules_tick(runtime, session_id, now, force=False)
+
+
+def _rules_tick(runtime: SessionRuntime, session_id: str, now: float, force: bool) -> Dict[str, Any]:
+    if runtime.paused and not force:
+        return {"triggered": False, "reason": "paused"}
 
     decision = runtime.pacing.check(now)
     if not (decision.triggered or force):
@@ -341,73 +502,157 @@ def tick(session_id: str, now: Optional[float] = None, force: bool = False) -> D
             return {"triggered": False}
 
         reason = decision.reason if decision.triggered else "manual"
-        top_chunks = match_topic(session_id, now)
-        window_text = _recent_transcript_window(runtime, now, config.MATCH_WINDOW_SECONDS)
-        slide_signal = _current_slide_signal(runtime, now)
-        slide_text = slide_signal["key_text"] or slide_signal["slide_title"] if slide_signal else None
-
-        if not top_chunks and not window_text.strip() and not slide_text:
-            return {"triggered": False, "reason": "no_content"}
-
-        # Previews of chunks asked about in EARLIER ticks this session —
-        # computed before this tick's own top_chunks are added below.
-        asked_previews = _asked_previews(runtime)
-
-        participant_marker = runtime.pacing.last_participant_at
-        question_text = question_gen.generate_question(
-            top_chunks, window_text, slide_text=slide_text, previously_asked_previews=asked_previews
-        )
-
-        # Human priority, part 2: generation takes seconds. If a student
-        # started speaking meanwhile, drop the question rather than talk
-        # over them. The gate isn't advanced, so it can fire again once the
-        # class goes quiet. (A manual force=True test question is kept.)
-        if not force and runtime.pacing.last_participant_at != participant_marker:
-            session_log.log_event(
-                runtime.session,
-                "question_suppressed",
-                reason="participant_spoke",
-                question=question_text,
-                topic_chunk_ids=[c.chunk_id for c in top_chunks],
-            )
-            storage.save_session(runtime.session)
-            return {"triggered": False, "reason": "participant_spoke"}
-
-        event = session_log.log_event(
-            runtime.session,
-            "question_generated",
-            question=question_text,
-            trigger_reason=reason,
-            shown=True,
-            topic_chunk_ids=[c.chunk_id for c in top_chunks],
-            slide_informed=slide_signal is not None,
-        )
-        runtime.pacing.note_question_shown(now)
-        # Every fired question updates coverage — pacing-triggered or
-        # force=True manual triggers alike, since both go through this path.
-        runtime.asked_chunk_ids.update(c.chunk_id for c in top_chunks)
-        storage.save_session(runtime.session)
-
-        return {
-            "triggered": True,
-            "reason": reason,
-            "question": question_text,
-            "timestamp": event["timestamp"],
-            "topic_chunks": [{"chunk_id": c.chunk_id, "preview": _chunk_preview(c.text)} for c in top_chunks],
-            "ai_label": config.AI_LABEL,
-            "slide_informed": slide_signal is not None,
-        }
+        return _generate_and_publish(runtime, session_id, now, reason, check_participant=not force)
     finally:
         runtime.lock.release()
 
 
+# --- The agent loop ---
+
+
+def _observe(runtime: SessionRuntime, now: float) -> controller.Observation:
+    started_at = runtime.session.get("started_at", 0.0)
+    class_minutes = runtime.session.get("class_minutes") or config.CLASS_LENGTH_MINUTES
+    elapsed_minutes = max(0.0, now - started_at) / 60
+    window_text = _recent_transcript_window(runtime, now, config.MATCH_WINDOW_SECONDS)
+    slide_signal = _current_slide_signal(runtime, now)
+    total = len(runtime.chunk_ids)
+    return controller.Observation(
+        elapsed_minutes=elapsed_minutes,
+        minutes_remaining=max(0.0, class_minutes - elapsed_minutes),
+        silence_seconds=max(0.0, now - runtime.pacing.last_speech_at),
+        seconds_since_last_question=max(0.0, now - runtime.pacing.last_question_at),
+        questions_asked=len(runtime.question_times),
+        questions_last_hour=sum(1 for t in runtime.question_times if t > now - 3600),
+        coverage_ratio=(len(runtime.asked_chunk_ids) / total) if total else 1.0,
+        recent_transcript=window_text,
+        slide_title=slide_signal["slide_title"] if slide_signal else None,
+        recently_asked=_asked_previews(runtime),
+        wrap_up_done=runtime.agent_wrap_up_done,
+        has_content=bool(window_text.strip() or slide_signal),
+    )
+
+
+def _precheck(runtime: SessionRuntime, now: float) -> tuple:
+    obs = _observe(runtime, now)
+    since_decision = None if runtime.last_decision_at is None else now - runtime.last_decision_at
+    code = controller.precheck(
+        obs,
+        paused=runtime.paused,
+        student_speaking=runtime.pacing.participant_recently_active(now),
+        seconds_since_last_decision=since_decision,
+    )
+    return obs, code
+
+
+def _held(code: str) -> Dict[str, Any]:
+    decision = controller.Decision(controller.STAY_SILENT, controller.PRECHECK_MESSAGES[code], "guardrail")
+    return {"triggered": False, "reason": code, "agent": decision.as_dict()}
+
+
+def _agent_tick(runtime: SessionRuntime, session_id: str, now: float) -> Dict[str, Any]:
+    obs, code = _precheck(runtime, now)
+    if code:
+        return _held(code)
+
+    if not runtime.lock.acquire(blocking=False):
+        return {"triggered": False}
+
+    try:
+        # Re-check with the lock held (another tick may have just acted).
+        obs, code = _precheck(runtime, now)
+        if code:
+            return _held(code)
+        runtime.last_decision_at = now
+
+        proposed = controller.decide(obs)
+        if proposed is None:
+            # Model unreachable or reply unusable: the rules pacing gate
+            # decides instead, so the co-host keeps working.
+            gate = runtime.pacing.check(now)
+            decision = (
+                controller.Decision(
+                    controller.ASK_QUESTION,
+                    f"The AI was unavailable, and the pacing rules fired ({gate.reason}).",
+                    "fallback",
+                )
+                if gate.triggered
+                else controller.Decision(
+                    controller.STAY_SILENT, "The AI was unavailable, and the pacing rules say wait.", "fallback"
+                )
+            )
+        else:
+            decision = controller.validate(proposed, obs)
+            if decision is not proposed:
+                session_log.log_event(
+                    runtime.session,
+                    "agent_veto",
+                    proposed_action=proposed.action,
+                    proposed_reason=proposed.reason,
+                    veto_reason=decision.reason,
+                )
+
+        # Audit trail: every decision the AI was consulted on is logged.
+        session_log.log_event(runtime.session, "agent_decision", **decision.as_dict())
+        storage.save_session(runtime.session)
+
+        if decision.action == controller.STAY_SILENT:
+            return {"triggered": False, "agent": decision.as_dict()}
+
+        if decision.action == controller.RUN_WRAP_UP:
+            runtime.agent_wrap_up_done = True
+            result = _wrap_up(
+                runtime, now, max_questions=1, trigger_reason="agent:run_wrap_up", agent_reason=decision.reason
+            )
+            if not result["generated"]:
+                return {"triggered": False, "reason": "covered", "agent": decision.as_dict()}
+            runtime.pacing.note_question_shown(now)
+            question = result["questions"][0]
+            return {
+                "triggered": True,
+                "reason": "agent:run_wrap_up",
+                "question": question["question"],
+                "timestamp": question["timestamp"],
+                "topic_chunks": [{"chunk_id": question["chunk_id"], "preview": question["preview"]}],
+                "ai_label": config.AI_LABEL,
+                "slide_informed": False,
+                "audience": "teacher",
+                "wrap_up": True,
+                "agent": decision.as_dict(),
+            }
+
+        audience = "class" if decision.action == controller.ASK_THE_CLASS else "teacher"
+        return _generate_and_publish(
+            runtime,
+            session_id,
+            now,
+            f"agent:{decision.action}",
+            audience=audience,
+            agent=decision,
+            check_participant=True,
+            check_grounding=True,
+        )
+    finally:
+        runtime.lock.release()
+
+
+def set_paused(session_id: str, paused: bool) -> Dict[str, Any]:
+    """The teacher's pause switch. While paused the co-host never acts on
+    its own (the manual Force question button still works)."""
+    runtime = _get_runtime(session_id)
+    if runtime.paused != paused:
+        runtime.paused = paused
+        session_log.log_event(runtime.session, "cohost_paused" if paused else "cohost_resumed")
+        storage.save_session(runtime.session)
+    return {"paused": runtime.paused}
+
+
 def wrap_up(session_id: str, now: Optional[float] = None) -> Dict[str, Any]:
-    """Deliberate end-of-session coverage pass. Triggered explicitly by the
-    teacher (POST /sessions/{id}/wrap-up) — never by the pacing gate, and
-    never automatically from transcript content (no "sounds like class is
-    ending" NLP detection by design). Does NOT end the session or touch
-    the pacing gate; callable independently while the session is still
-    active, the same way add_note() is.
+    """Deliberate end-of-session coverage pass, triggered by the teacher
+    (POST /sessions/{id}/wrap-up). Does NOT end the session or touch the
+    pacing gate; callable independently while the session is still
+    active, the same way add_note() is. In agent mode the controller can
+    also choose a one-question wrap-up near the end of class.
 
     If the unit's already sufficiently covered (>= config.COVERAGE_WRAP_UP_THRESHOLD
     of chunks touched, or nothing left uncovered), returns a status-only
@@ -420,7 +665,16 @@ def wrap_up(session_id: str, now: Optional[float] = None) -> Dict[str, Any]:
     """
     runtime = _get_runtime(session_id)
     now = now if now is not None else time.time()
+    return _wrap_up(runtime, now, max_questions=2, trigger_reason="wrap_up")
 
+
+def _wrap_up(
+    runtime: SessionRuntime,
+    now: float,
+    max_questions: int,
+    trigger_reason: str,
+    agent_reason: Optional[str] = None,
+) -> Dict[str, Any]:
     total = len(runtime.chunk_ids)
     coverage_ratio = (len(runtime.asked_chunk_ids) / total) if total > 0 else 1.0
     unmatched_indices = [i for i, cid in enumerate(runtime.chunk_ids) if cid not in runtime.asked_chunk_ids]
@@ -446,7 +700,7 @@ def wrap_up(session_id: str, now: Optional[float] = None) -> Dict[str, Any]:
         query_vec = np.zeros(unmatched_embeddings.shape[1], dtype=np.float32)
 
     picked = retrieval.top_k_chunks(
-        query_vec, unmatched_ids, unmatched_texts, unmatched_embeddings, k=min(2, len(unmatched_ids))
+        query_vec, unmatched_ids, unmatched_texts, unmatched_embeddings, k=min(max_questions, len(unmatched_ids))
     )
 
     questions: List[Dict[str, Any]] = []
@@ -457,18 +711,28 @@ def wrap_up(session_id: str, now: Optional[float] = None) -> Dict[str, Any]:
             previously_asked_previews=_asked_previews(runtime),
             wrap_up=True,
         )
-        event = session_log.log_event(
-            runtime.session,
-            "question_generated",
-            question=question_text,
-            trigger_reason="wrap_up",
-            shown=True,
-            topic_chunk_ids=[chunk.chunk_id],
-            slide_informed=False,
-            wrap_up=True,
-        )
+        fields: Dict[str, Any] = {
+            "question": question_text,
+            "trigger_reason": trigger_reason,
+            "shown": True,
+            "topic_chunk_ids": [chunk.chunk_id],
+            "slide_informed": False,
+            "wrap_up": True,
+            "audience": "teacher",
+        }
+        if agent_reason:
+            fields["agent_reason"] = agent_reason
+        event = session_log.log_event(runtime.session, "question_generated", **fields)
         runtime.asked_chunk_ids.add(chunk.chunk_id)
-        questions.append({"question": question_text, "timestamp": event["timestamp"], "chunk_id": chunk.chunk_id})
+        runtime.question_times.append(now)
+        questions.append(
+            {
+                "question": question_text,
+                "timestamp": event["timestamp"],
+                "chunk_id": chunk.chunk_id,
+                "preview": _chunk_preview(chunk.text),
+            }
+        )
 
     storage.save_session(runtime.session)
 

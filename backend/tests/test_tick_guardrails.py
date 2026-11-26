@@ -128,8 +128,14 @@ def test_concurrent_ticks_fire_at_most_once(monkeypatch):
         monkeypatch.setattr(session_manager.question_gen, "generate_question", slow_generate)
 
         results = []
+        # All five calls start at the same instant, so they genuinely
+        # overlap even on a busy machine. (Without this, a thread scheduled
+        # after the first tick has finished would legitimately fire again,
+        # making the test flaky under load.)
+        start_together = threading.Barrier(5)
 
         def call_tick():
+            start_together.wait()
             results.append(session_manager.tick(runtime.session["id"], now=300, force=True))
 
         threads = [threading.Thread(target=call_tick) for _ in range(5)]

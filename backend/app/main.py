@@ -9,7 +9,7 @@ from typing import List, Optional
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import auth, config, ingestion, lti, session_manager, storage
 from .auth import User, optional_user, require_teacher
@@ -35,6 +35,13 @@ class UnitSummary(BaseModel):
 
 class StartSessionRequest(BaseModel):
     unit_id: str
+    # Planned class length; the AI controller uses it to judge "near the
+    # end" for wrap-up. Defaults to CLASS_LENGTH_MINUTES.
+    class_minutes: Optional[int] = Field(default=None, ge=10, le=300)
+
+
+class PauseRequest(BaseModel):
+    paused: bool
 
 
 class TranscriptChunkRequest(BaseModel):
@@ -79,7 +86,7 @@ def _require_unit_access(unit_id: str, user: User) -> dict:
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "ai_label": config.AI_LABEL}
+    return {"status": "ok", "ai_label": config.AI_LABEL, "controller_mode": config.CONTROLLER_MODE}
 
 
 @app.get("/auth/me")
@@ -149,6 +156,7 @@ def start_session(req: StartSessionRequest, user: User = Depends(require_teacher
             req.unit_id,
             owner_sub=user.sub if user.authenticated else None,
             course_id=user.course_id,
+            class_minutes=req.class_minutes,
         )
     except session_manager.UnitNotFound:
         raise HTTPException(404, "Unit not found")
@@ -219,6 +227,17 @@ def post_frame(session_id: str, req: FrameRequest, user: User = Depends(require_
         raise HTTPException(400, "Frame is empty")
     try:
         return session_manager.process_frame(session_id, req.frame)
+    except session_manager.SessionNotFound:
+        raise HTTPException(404, "Session not found or already ended")
+
+
+@app.post("/sessions/{session_id}/pause")
+def post_pause(session_id: str, req: PauseRequest, user: User = Depends(require_teacher)):
+    """The teacher's pause switch: while paused, the co-host never acts on
+    its own. Manual 'Force question' and 'Wrap up unit' still work."""
+    _require_session_access(session_id, user)
+    try:
+        return session_manager.set_paused(session_id, req.paused)
     except session_manager.SessionNotFound:
         raise HTTPException(404, "Session not found or already ended")
 

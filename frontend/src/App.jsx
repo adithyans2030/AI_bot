@@ -34,6 +34,12 @@ export default function App() {
   const [wrapUpResult, setWrapUpResult] = useState(null);
   const [wrapUpPending, setWrapUpPending] = useState(false);
 
+  // AI controller: planned class length, the teacher's pause switch, and
+  // the latest decision ({action, reason, source}) shown for transparency.
+  const [classMinutes, setClassMinutes] = useState(60);
+  const [paused, setPaused] = useState(false);
+  const [agentStatus, setAgentStatus] = useState(null);
+
   // Purely a display clock for the compact session bar's elapsed-time badge —
   // doesn't touch session/report state or the backend.
   const [nowTick, setNowTick] = useState(() => Date.now() / 1000);
@@ -93,7 +99,8 @@ export default function App() {
       return;
     }
     try {
-      const s = await api.startSession(selectedUnitId);
+      const minutes = Number(classMinutes);
+      const s = await api.startSession(selectedUnitId, minutes >= 10 && minutes <= 300 ? minutes : undefined);
       setSession({
         sessionId: s.session_id,
         unitId: selectedUnitId,
@@ -109,6 +116,8 @@ export default function App() {
       setCurrentQuestion("");
       setReport(null);
       setWrapUpResult(null);
+      setPaused(false);
+      setAgentStatus(null);
     } catch (err) {
       setSessionStatus(`Error starting session: ${err.message}`);
     }
@@ -145,6 +154,7 @@ export default function App() {
     tickInFlightRef.current = true;
     try {
       const result = await api.tick(session.sessionId, force);
+      if (result.agent) setAgentStatus(result.agent);
       if (result.triggered) {
         setCurrentQuestion(result.question);
         if (result.topic_chunks && result.topic_chunks.length > 0) {
@@ -152,13 +162,34 @@ export default function App() {
         }
         setQuestionEntries((prev) => [
           ...prev,
-          { timestamp: result.timestamp, text: result.question, reason: result.reason },
+          {
+            timestamp: result.timestamp,
+            text: result.question,
+            reason: result.reason,
+            audience: result.audience,
+            why: result.agent ? result.agent.reason : null,
+          },
         ]);
       }
     } catch (err) {
       setSessionStatus(`Tick error: ${err.message}`);
     } finally {
       tickInFlightRef.current = false;
+    }
+  }
+
+  async function togglePause() {
+    if (!session) return;
+    try {
+      const res = await api.setPaused(session.sessionId, !paused);
+      setPaused(res.paused);
+      setAgentStatus(
+        res.paused
+          ? { action: "stay_silent", reason: "Paused by the teacher.", source: "guardrail" }
+          : null
+      );
+    } catch (err) {
+      setSessionStatus(`Pause error: ${err.message}`);
     }
   }
 
@@ -281,7 +312,13 @@ export default function App() {
             reloadUnits={reloadUnits}
           />
 
-          <SessionPanel statusText={sessionStatus} onStart={startSession} canStart={!!selectedUnitId} />
+          <SessionPanel
+            statusText={sessionStatus}
+            onStart={startSession}
+            canStart={!!selectedUnitId}
+            classMinutes={classMinutes}
+            setClassMinutes={setClassMinutes}
+          />
         </div>
       )}
 
@@ -297,6 +334,9 @@ export default function App() {
             currentQuestion={currentQuestion}
             questionEntries={questionEntries}
             onForceQuestion={() => tick(true)}
+            agentStatus={agentStatus}
+            paused={paused}
+            onTogglePause={togglePause}
           />
 
           <NotesPanel session={session} entries={notesEntries} onAddNote={addNote} />

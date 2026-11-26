@@ -76,6 +76,21 @@ def generate_report(session: Dict[str, Any]) -> Dict[str, Any]:
     for q in questions:
         covered_chunk_ids.update(q.get("topic_chunk_ids", []))
 
+    # Audit summary of the AI controller's own behaviour (agent mode):
+    # how often it was consulted and what it chose. About the AI only —
+    # nothing here describes students.
+    decisions = [e for e in session["log"] if e["type"] == "agent_decision"]
+    by_action: Dict[str, int] = {}
+    for d in decisions:
+        by_action[d.get("action", "unknown")] = by_action.get(d.get("action", "unknown"), 0) + 1
+    ai_decisions = {
+        "consulted": len(decisions),
+        "by_action": by_action,
+        "fallbacks": sum(1 for d in decisions if d.get("source") == "fallback"),
+        "vetoed": sum(1 for e in session["log"] if e["type"] == "agent_veto"),
+        "rejected_off_topic": sum(1 for e in session["log"] if e["type"] == "question_rejected"),
+    }
+
     return {
         "session_id": session["id"],
         "unit_id": session["unit_id"],
@@ -100,9 +115,12 @@ def generate_report(session: Dict[str, Any]) -> Dict[str, Any]:
                 "shown": q.get("shown", True),
                 "slide_informed": q.get("slide_informed", False),
                 "wrap_up": q.get("wrap_up", False),
+                "audience": q.get("audience", "teacher"),
+                "agent_reason": q.get("agent_reason"),
             }
             for q in questions
         ],
+        "ai_decisions": ai_decisions,
         "teacher_notes": [
             {"timestamp": n["timestamp"], "timestamp_iso": _fmt_ts(n["timestamp"]), "text": n["text"]}
             for n in notes
@@ -135,9 +153,23 @@ def render_report_markdown(report: Dict[str, Any]) -> str:
             reason = f" _(trigger: {q['trigger_reason']})_" if q.get("trigger_reason") else ""
             slide_tag = " _(slide-informed)_" if q.get("slide_informed") else ""
             wrap_up_tag = " _(wrap-up)_" if q.get("wrap_up") else ""
-            lines.append(f"- [{q['timestamp_iso']}] {q['question']}{reason}{slide_tag}{wrap_up_tag}")
+            class_tag = " _(to the class)_" if q.get("audience") == "class" else ""
+            lines.append(f"- [{q['timestamp_iso']}] {q['question']}{reason}{slide_tag}{wrap_up_tag}{class_tag}")
+            if q.get("agent_reason"):
+                lines.append(f"  - Why the AI asked: {q['agent_reason']}")
     else:
         lines.append("- (no questions were generated this session)")
+    decisions = report.get("ai_decisions") or {}
+    if decisions.get("consulted"):
+        lines.append("")
+        lines.append("## AI controller decisions")
+        actions = ", ".join(f"{a}: {n}" for a, n in sorted(decisions.get("by_action", {}).items()))
+        lines.append(f"- Consulted {decisions['consulted']} times ({actions})")
+        lines.append(
+            f"- Fallbacks to the pacing rules: {decisions.get('fallbacks', 0)}; "
+            f"vetoed by code checks: {decisions.get('vetoed', 0)}; "
+            f"questions dropped as off-topic: {decisions.get('rejected_off_topic', 0)}"
+        )
     lines.append("")
     lines.append(f"## Teacher notes ({len(report['teacher_notes'])})")
     if report["teacher_notes"]:

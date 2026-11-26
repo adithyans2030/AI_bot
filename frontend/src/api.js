@@ -42,7 +42,10 @@ export const api = {
   listUnits: () => get("/units"),
   createUnit: (name, text) => post("/units", { name, text }),
 
-  startSession: (unitId) => post("/sessions", { unit_id: unitId }),
+  startSession: (unitId, classMinutes) =>
+    post("/sessions", { unit_id: unitId, ...(classMinutes ? { class_minutes: classMinutes } : {}) }),
+  // Teacher's pause switch: while paused the co-host never acts on its own.
+  setPaused: (sessionId, paused) => post(`/sessions/${sessionId}/pause`, { paused }),
   postTranscript: (sessionId, text, timestamp) =>
     post(`/sessions/${sessionId}/transcript`, { text, timestamp }),
   // "Someone in the class is speaking" — no audio or words are sent.

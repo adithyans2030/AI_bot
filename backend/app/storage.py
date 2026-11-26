@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -14,7 +15,18 @@ config.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 def _write_json(path: Path, data: Dict[str, Any]) -> None:
     tmp_path = path.with_suffix(".tmp")
     tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    tmp_path.replace(path)
+    # On Windows, a sync client (OneDrive) or antivirus can hold the target
+    # file open for a moment, and the atomic replace then fails with
+    # "Access is denied". Seen in practice with this repo inside OneDrive.
+    # Retry briefly rather than crash the request (e.g. a live tick).
+    for attempt in range(6):
+        try:
+            tmp_path.replace(path)
+            return
+        except PermissionError:
+            if attempt == 5:
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 def _read_json(path: Path) -> Dict[str, Any]:

@@ -225,7 +225,7 @@
 
 /* --- Form controls --- */
 
-.app-shell input[type="text"], .app-shell textarea, .app-shell select {
+.app-shell input[type="text"], .app-shell input[type="number"], .app-shell textarea, .app-shell select {
   min-height: 44px;
   padding: 10px 12px;
   background: var(--surface);

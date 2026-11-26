@@ -197,6 +197,51 @@ the co-host hold questions while a student is talking
 (`PARTICIPANT_HOLD_SECONDS`). Only the fact that someone spoke is sent;
 it's never logged or reported. Teachers should wear headphones.
 
+## AI controller (agentic mode)
+
+With `CONTROLLER_MODE=agent` (the default), an LLM decides what the
+co-host does, and code decides whether it's allowed to
+(`backend/app/controller.py`):
+
+```
+observe ──► precheck (code) ──► decide (LLM) ──► validate (code) ──► act
+               │ hard "no"         │ fails            │ veto
+               ▼                   ▼                  ▼
+          stay silent      fall back to the     stay silent
+          (LLM not called)  rules pacing gate
+```
+
+- **Actions** (a fixed list; free text never becomes an action):
+  `stay_silent`, `ask_question` (to the teacher), `ask_the_class` (invite
+  students to answer), `run_wrap_up` (one question on an uncovered part of
+  the unit, near the end).
+- **Before the AI is asked** (code): paused by the teacher, a student
+  speaking, nothing to ground a question in, under
+  `MIN_SECONDS_BETWEEN_QUESTIONS` since the last one, `MAX_QUESTIONS_PER_HOUR`
+  spent, teacher still talking (under `CONTROLLER_MIN_SILENCE_SECONDS` of
+  quiet, unless no question for `PACING_MAX_INTERVAL_SECONDS`), or consulted
+  under `CONTROLLER_RECONSULT_SECONDS` ago.
+- **After the AI chooses** (code): wrap-up is vetoed outside the last
+  `WRAP_UP_WINDOW_MINUTES` of the class or if already done; any generated
+  question less similar than `MIN_GROUNDING_SCORE` to the course chunks is
+  dropped as off-topic; a student starting to speak during generation still
+  drops the question.
+- **If the model is unreachable or replies with nonsense**, the original
+  pacing rules decide, so the co-host keeps working.
+- **Teacher controls:** class length at session start, a **Pause co-host**
+  switch (`POST /sessions/{id}/pause`), and the manual buttons still work.
+- **Audit:** every decision is logged (`agent_decision`, `agent_veto`,
+  `question_rejected`); the report shows why the AI asked each question and
+  a summary of its decisions.
+
+**Model quality matters.** On four test moments (26 Nov 2026), `gemma2:2b`
+made the right choice about 11 times in 12 at ~1 s per decision, but once
+asked a question while the teacher was mid-sentence, even though its own
+stated reason said "teacher is mid-sentence". `llama3.1` (8B) took
+13-19 s per decision on a 4 GB GPU. Treat local models as a development
+setup and use a stronger hosted model (`CONTROLLER_MODEL`) for real classes.
+`CONTROLLER_MODE=rules` restores the original fixed pacing gate.
+
 ## Testing
 
 ```bash

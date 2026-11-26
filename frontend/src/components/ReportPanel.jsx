@@ -35,13 +35,38 @@ export default function ReportPanel({ report }) {
           {report.questions.length ? (
             report.questions.map((q, i) => (
               <li key={i}>
-                [{q.timestamp_iso}] {q.question} <em>({q.trigger_reason}{q.wrap_up ? ", wrap-up" : ""})</em>
+                [{q.timestamp_iso}] {q.question}{" "}
+                <em>
+                  ({q.trigger_reason}
+                  {q.wrap_up ? ", wrap-up" : ""}
+                  {q.audience === "class" ? ", to the class" : ""})
+                </em>
+                {q.agent_reason && <div className="status-line">Why the AI asked: {q.agent_reason}</div>}
               </li>
             ))
           ) : (
             <li>(no questions were generated this session)</li>
           )}
         </ul>
+
+        {report.ai_decisions && report.ai_decisions.consulted > 0 && (
+          <>
+            <h3>AI controller decisions</h3>
+            <ul>
+              <li>
+                Consulted {report.ai_decisions.consulted} times (
+                {Object.entries(report.ai_decisions.by_action)
+                  .map(([action, n]) => `${action}: ${n}`)
+                  .join(", ")}
+                )
+              </li>
+              <li>
+                Fallbacks to the pacing rules: {report.ai_decisions.fallbacks}; vetoed by code checks:{" "}
+                {report.ai_decisions.vetoed}; questions dropped as off-topic: {report.ai_decisions.rejected_off_topic}
+              </li>
+            </ul>
+          </>
+        )}
 
         <h3>Teacher notes ({report.teacher_notes.length})</h3>
         <ul>

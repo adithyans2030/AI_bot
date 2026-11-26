@@ -38,6 +38,22 @@ SYSTEM_PROMPT = (
     "no explanation."
 )
 
+# For the controller's ask_the_class action: a prompt aimed at getting real
+# students to answer. It is shown labelled as the AI Co-host, so it speaks
+# as the assistant, never as a student.
+CLASS_SYSTEM_PROMPT = (
+    "You are AI Co-host, a clearly labelled AI assistant in a live online college "
+    "class. Write ONE short prompt that invites the STUDENTS (not the teacher) to "
+    "answer or discuss something from what is being taught. Rules:\n"
+    "1. It must be grounded in the provided unit material — don't invent facts "
+    "outside it.\n"
+    "2. Make it easy to answer out loud in a sentence or two, e.g. \"Can someone "
+    "explain why...?\" or \"What do you all think happens when...?\".\n"
+    "3. Never pretend to be a student, and don't address the teacher.\n"
+    "4. Output ONLY the prompt itself. No preamble, no quotes, no labels, no "
+    "explanation."
+)
+
 
 def build_user_prompt(
     chunks: List[ScoredChunk],
@@ -45,6 +61,7 @@ def build_user_prompt(
     slide_text: Optional[str] = None,
     previously_asked_previews: Optional[List[str]] = None,
     wrap_up: bool = False,
+    audience: str = "teacher",
 ) -> str:
     chunks_block = "\n\n".join(f"[Chunk {c.chunk_id}]\n{c.text}" for c in chunks) or "(none retrieved)"
     transcript_block = transcript_window.strip() or "(no recent transcript)"
@@ -71,7 +88,7 @@ def build_user_prompt(
         f"Relevant unit material:\n{chunks_block}\n\n"
         f"Recent transcript of what the teacher has been saying:\n{transcript_block}"
         f"{slide_block}{asked_block}{wrap_up_block}\n\n"
-        "Generate one student question now."
+        + ("Write one prompt for the students now." if audience == "class" else "Generate one student question now.")
     )
 
 
@@ -81,16 +98,19 @@ def generate_question(
     slide_text: Optional[str] = None,
     previously_asked_previews: Optional[List[str]] = None,
     wrap_up: bool = False,
+    audience: str = "teacher",
 ) -> str:
+    """audience="teacher": a student-style question for the teacher (the
+    default). audience="class": a prompt inviting the students to answer."""
     client = get_client()
     response = client.chat.completions.create(
         model=config.LLM_MODEL,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": CLASS_SYSTEM_PROMPT if audience == "class" else SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": build_user_prompt(
-                    chunks, transcript_window, slide_text, previously_asked_previews, wrap_up
+                    chunks, transcript_window, slide_text, previously_asked_previews, wrap_up, audience
                 ),
             },
         ],

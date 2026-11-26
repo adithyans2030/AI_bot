@@ -4,7 +4,17 @@
 // set — App.jsx renders it unconditionally rather than swapping it out for
 // the compact session-status-bar, since wrap-up needs to stay reachable
 // for the whole time a session is active, not just before it starts.
-export default function SessionPanel({ session, statusText, onStart, canStart, onWrapUp, wrapUpResult, wrapUpPending }) {
+export default function SessionPanel({
+  session,
+  statusText,
+  onStart,
+  canStart,
+  onWrapUp,
+  wrapUpResult,
+  wrapUpPending,
+  classMinutes,
+  setClassMinutes,
+}) {
   if (session) {
     return (
       <section className="panel" id="session-panel">
@@ -31,6 +41,16 @@ export default function SessionPanel({ session, statusText, onStart, canStart, o
       <p className="muted">
         Pick a unit, then start — the AI co-host begins listening once the session is running.
       </p>
+      <label htmlFor="class-minutes">Class length (minutes)</label>
+      <input
+        id="class-minutes"
+        type="number"
+        min={10}
+        max={300}
+        value={classMinutes}
+        onChange={(e) => setClassMinutes(e.target.value)}
+      />
+      <p className="muted">The AI co-host uses this to know when the class is near its end, for wrap-up.</p>
       <button onClick={onStart} disabled={!canStart}>
         Start session
       </button>

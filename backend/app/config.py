@@ -87,6 +87,33 @@ PACING_MAX_INTERVAL_SECONDS = int(os.environ.get("PACING_MAX_INTERVAL_SECONDS", 
 PARTICIPANT_HOLD_SECONDS = int(os.environ.get("PARTICIPANT_HOLD_SECONDS", "15"))
 
 
+# --- AI controller (agentic mode) ---
+# "agent": an LLM decides each moment what to do (stay silent, ask a
+#          question, ask the class, run wrap-up) and code checks every
+#          choice against the hard limits below before anything happens.
+# "rules": the original fixed pacing gate (silence / interval) decides.
+CONTROLLER_MODE = os.environ.get("CONTROLLER_MODE", "agent").strip().lower()
+# Model that makes the decisions. Defaults to the question model; a small,
+# fast model is fine here because it only returns a one-line JSON choice.
+CONTROLLER_MODEL = os.environ.get("CONTROLLER_MODEL", LLM_MODEL)
+# The AI is only consulted after at least this much quiet...
+CONTROLLER_MIN_SILENCE_SECONDS = int(os.environ.get("CONTROLLER_MIN_SILENCE_SECONDS", "6"))
+# ...and at most this often (it is not called on every 5 s poll).
+CONTROLLER_RECONSULT_SECONDS = int(os.environ.get("CONTROLLER_RECONSULT_SECONDS", "20"))
+# Hard limits the AI can never override.
+MAX_QUESTIONS_PER_HOUR = int(os.environ.get("MAX_QUESTIONS_PER_HOUR", "6"))
+MIN_SECONDS_BETWEEN_QUESTIONS = int(os.environ.get("MIN_SECONDS_BETWEEN_QUESTIONS", "90"))
+# A generated question must be at least this similar (cosine, local
+# embedding model) to the course chunks it was based on, or it is dropped
+# as off-topic. Calibrate on real lectures before relying on the number.
+MIN_GROUNDING_SCORE = float(os.environ.get("MIN_GROUNDING_SCORE", "0.30"))
+# Planned class length, used to judge "near the end" for wrap-up. Can be
+# set per session when it starts.
+CLASS_LENGTH_MINUTES = int(os.environ.get("CLASS_LENGTH_MINUTES", "60"))
+# Wrap-up is allowed only in the last this-many minutes of the class.
+WRAP_UP_WINDOW_MINUTES = int(os.environ.get("WRAP_UP_WINDOW_MINUTES", "10"))
+
+
 def _env_bool(name: str, default: bool) -> bool:
     return os.environ.get(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
